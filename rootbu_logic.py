@@ -74,6 +74,17 @@ class OpenPlan:
         return self.command is not None
 
 
+@dataclass
+class SetupGuidance:
+    title: str
+    messages: list[str]
+    commands: list[str] = field(default_factory=list)
+
+    @property
+    def has_commands(self) -> bool:
+        return bool(self.commands)
+
+
 Runner = Callable[[Command, int], ProbeResult]
 
 
@@ -110,6 +121,25 @@ def first_output_line(output: str) -> str:
         if clean:
             return clean
     return ""
+
+
+def user_friendly_platform_label(os_name: str | None = None) -> str:
+    system = os_name or platform.system()
+    machine = platform.machine() or "unknown architecture"
+
+    if system == "Darwin":
+        mac_version = platform.mac_ver()[0] or platform.release()
+        return f"macOS / Darwin {mac_version} / {machine}"
+    if system == "Linux":
+        release = platform.release()
+        return f"Linux / {release} / {machine}"
+    if system == "Windows":
+        release = platform.release()
+        version = platform.version()
+        detail = f"{release} {version}".strip()
+        return f"Windows / {detail} / {machine}"
+
+    return f"{system} / {machine}"
 
 
 def parse_conda_env_names(output: str) -> set[str]:
@@ -169,7 +199,11 @@ def find_native_conda(os_name: str, runner: Runner) -> tuple[Command | None, str
         if result.returncode == 0:
             detail = first_output_line(result.stdout) or command[0]
             return command, detail
-    return None, "No conda executable found in PATH or common Miniconda/Anaconda locations."
+    return None, "Conda was not found. ROOTBU cannot install ROOT yet. Install Miniforge or Miniconda first, then restart ROOTBU and run Check System again."
+
+
+def missing_wsl_conda_message() -> str:
+    return "Conda was not found inside WSL. ROOTBU cannot install ROOT yet. Install Miniforge or Miniconda in WSL first, then restart ROOTBU and run Check System again."
 
 
 def check_env_exists(conda_command: Command, runner: Runner) -> bool:
@@ -212,7 +246,7 @@ def run_wsl_probe(script: str, runner: Runner, timeout: int = 15) -> ProbeResult
 
 def collect_system_report(runner: Runner = run_probe) -> SystemReport:
     os_name = platform.system()
-    platform_label = platform.platform()
+    platform_label = user_friendly_platform_label(os_name)
     report = SystemReport(os_name=os_name, platform_label=platform_label)
 
     report.checks.append(CheckItem("Operating system", STATUS_OK, platform_label))
@@ -239,7 +273,9 @@ def collect_system_report(runner: Runner = run_probe) -> SystemReport:
         if report.native_env_exists:
             report.native_root_in_env = check_root_in_env(native_conda, runner)
     else:
-        report.checks.append(CheckItem("Conda (native)", STATUS_WARN, native_detail))
+        status = STATUS_INFO if os_name == "Windows" else STATUS_WARN
+        detail = "Native conda was not found. ROOTBU uses conda inside WSL for ROOT on Windows." if os_name == "Windows" else native_detail
+        report.checks.append(CheckItem("Conda (native)", status, detail))
 
     native_root, root_command, root_detail = check_direct_root(runner)
     report.native_root_available = native_root
@@ -263,7 +299,7 @@ def collect_system_report(runner: Runner = run_probe) -> SystemReport:
             if report.wsl_env_exists:
                 report.wsl_root_in_env = run_wsl_probe(f"conda run -n {ENV_NAME} root --version", runner, 20).returncode == 0
         else:
-            report.checks.append(CheckItem("Conda (WSL)", STATUS_WARN, "Conda was not found inside WSL."))
+            report.checks.append(CheckItem("Conda (WSL)", STATUS_WARN, missing_wsl_conda_message()))
 
         wsl_root = run_wsl_probe("command -v root >/dev/null 2>&1 && root --version", runner, 12)
         report.wsl_root_available = wsl_root.returncode == 0
@@ -290,7 +326,7 @@ def build_install_plan(report: SystemReport) -> InstallPlan:
             messages.append("Install WSL manually first, then run Check System again.")
             return InstallPlan("Windows / WSL", messages, [])
         if not report.wsl_conda_available:
-            messages.append("Install Miniconda or Anaconda inside WSL first, then run Check System again.")
+            messages.append("Install Miniforge or Miniconda inside WSL first, then run Check System again.")
             return InstallPlan("Windows / WSL", messages, [])
         if report.wsl_root_in_env:
             messages.append(f"ROOT is already available in WSL environment {ENV_NAME}.")
@@ -308,7 +344,7 @@ def build_install_plan(report: SystemReport) -> InstallPlan:
         return InstallPlan(report.os_name, messages, [])
 
     if not report.native_conda:
-        messages.append("Install Miniconda or Anaconda first, then run Check System again.")
+        messages.append("Install Miniforge or Miniconda first, then run Check System again.")
         return InstallPlan(report.os_name, messages, [])
 
     if report.native_root_in_env:
@@ -350,3 +386,103 @@ def build_open_plan(report: SystemReport) -> OpenPlan:
 
     messages.append("ROOT is not available yet.")
     return OpenPlan(report.os_name, messages, None)
+
+
+def macos_miniforge_commands(machine: str | None = None) -> list[str]:
+    arch = machine or platform.machine()
+    if arch == "arm64":
+        installer = "Miniforge3-MacOSX-arm64.sh"
+    else:
+        installer = "Miniforge3-MacOSX-x86_64.sh"
+    return [
+        f'curl -fsSLo Miniforge3.sh "https://github.com/conda-forge/miniforge/releases/latest/download/{installer}"',
+        "bash Miniforge3.sh",
+    ]
+
+
+def linux_miniforge_commands() -> list[str]:
+    installer = "Miniforge3-Linux-x86_64.sh"
+    return [
+        f'curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/{installer}"',
+        f"bash {installer}",
+    ]
+
+
+def conda_restart_messages(scope: str = "terminal") -> list[str]:
+    return [
+        f"After the installer finishes, close and reopen your {scope}.",
+        "If conda is still not found, run conda init in that terminal, close it, reopen it, then run ROOTBU Check System again.",
+        "ROOTBU only shows these commands. It does not download or run the Miniforge installer for you.",
+    ]
+
+
+def native_conda_missing_guidance(report: SystemReport) -> SetupGuidance:
+    if report.os_name == "Darwin":
+        messages = [
+            "Conda was not found. ROOTBU cannot install ROOT yet.",
+            "Recommended: install Miniforge manually because it is focused on conda-forge packages.",
+            "Open Terminal and run these commands:",
+        ] + conda_restart_messages("terminal")
+        return SetupGuidance("Next Steps", messages, macos_miniforge_commands())
+
+    if report.os_name == "Linux":
+        messages = [
+            "Conda was not found. ROOTBU cannot install ROOT yet.",
+            "Recommended: install Miniforge manually because it is focused on conda-forge packages.",
+            "Open a terminal and run these commands:",
+        ] + conda_restart_messages("terminal")
+        return SetupGuidance("Next Steps", messages, linux_miniforge_commands())
+
+    return SetupGuidance("Next Steps", [])
+
+
+def build_setup_guidance(report: SystemReport) -> SetupGuidance:
+    if report.os_name == "Windows":
+        if not report.wsl_available:
+            return SetupGuidance(
+                "Next Steps",
+                [
+                    "ROOTBU expects WSL for the ROOT setup flow on Windows.",
+                    "WSL was not detected. Open PowerShell as Administrator and run this command:",
+                    "Restart Windows if the WSL installer asks you to, then open ROOTBU and run Check System again.",
+                    "ROOTBU will not run wsl --install automatically.",
+                ],
+                ["wsl --install"],
+            )
+
+        if not report.wsl_conda_available:
+            messages = [
+                "WSL is available, but conda was not found inside WSL.",
+                "Open your Ubuntu/WSL terminal and install Miniforge manually.",
+                "Recommended: Miniforge is focused on conda-forge packages.",
+                "Run these commands inside WSL:",
+            ] + conda_restart_messages("WSL terminal")
+            return SetupGuidance("Next Steps", messages, linux_miniforge_commands())
+
+        if report.wsl_root_in_env or report.wsl_root_available:
+            return SetupGuidance("Next Steps", ["ROOT is already available in WSL. You can use Open ROOT."])
+
+        return SetupGuidance(
+            "Next Steps",
+            [
+                "WSL and conda are available.",
+                f"You can use Install ROOT to create or update {ENV_NAME}. ROOTBU will show a dry run and ask before running conda.",
+            ],
+        )
+
+    if report.os_name in {"Darwin", "Linux"} and not report.native_conda:
+        return native_conda_missing_guidance(report)
+
+    if report.native_root_in_env or report.native_root_available:
+        return SetupGuidance("Next Steps", ["ROOT is already available. You can use Open ROOT."])
+
+    if report.native_conda:
+        return SetupGuidance(
+            "Next Steps",
+            [
+                "Conda is available.",
+                f"You can use Install ROOT to create or update {ENV_NAME}. ROOTBU will show a dry run and ask before running conda.",
+            ],
+        )
+
+    return SetupGuidance("Next Steps", ["No setup guidance is available for this platform yet."])

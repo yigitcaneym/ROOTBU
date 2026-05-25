@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rootbu_logic import build_install_plan, collect_system_report, command_to_text
+from rootbu_logic import build_install_plan, build_setup_guidance, collect_system_report, command_to_text
 
 
 def run_installation():
@@ -10,6 +10,13 @@ def run_installation():
 
     for item in report.checks:
         yield f"[{item.status}] {item.name}: {item.detail}"
+
+    guidance = build_setup_guidance(report)
+    yield guidance.title
+    for message in guidance.messages:
+        yield message
+    for command in guidance.commands:
+        yield f"$ {command}"
 
     plan = build_install_plan(report)
     for message in plan.messages:

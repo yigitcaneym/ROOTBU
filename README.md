@@ -23,6 +23,55 @@ You can also launch the same app with `python root_installer.py`.
 
 Use **Check System** first. It logs the detected OS, WSL status, conda status, ROOT availability, and whether the `rootbu_root_env` environment already exists.
 
+If prerequisites are missing, ROOTBU prints a **Next Steps** section with manual commands. The app does not run these prerequisite installers for you.
+
+## If Conda Is Missing
+
+ROOTBU needs conda before it can install ROOT. The recommended beginner path is Miniforge because it is focused on conda-forge packages.
+
+After installing Miniforge, close and reopen your terminal. If `conda` still is not found, run `conda init`, close and reopen the terminal again, then restart ROOTBU and run **Check System**.
+
+### macOS Apple Silicon
+
+Open Terminal and run:
+
+```bash
+curl -fsSLo Miniforge3.sh "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-arm64.sh"
+bash Miniforge3.sh
+```
+
+### macOS Intel
+
+Open Terminal and run:
+
+```bash
+curl -fsSLo Miniforge3.sh "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-x86_64.sh"
+bash Miniforge3.sh
+```
+
+### Linux x86_64
+
+Open a terminal and run:
+
+```bash
+curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh"
+bash Miniforge3-Linux-x86_64.sh
+```
+
+### Windows
+
+ROOTBU expects WSL for the ROOT setup flow on Windows.
+
+If WSL is missing, open PowerShell as Administrator and run:
+
+```powershell
+wsl --install
+```
+
+Restart Windows if the WSL installer asks you to. Then open ROOTBU and run **Check System** again.
+
+If WSL is present but conda is missing inside WSL, open your Ubuntu/WSL terminal and use the Linux x86_64 Miniforge commands above.
+
 ## Safety Notes
 
 - ROOTBU does not run `wsl --install`.

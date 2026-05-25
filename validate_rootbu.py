@@ -68,11 +68,66 @@ def assert_install_plans() -> None:
     assert any("will not run wsl --install" in message for message in windows_plan.messages)
 
 
+def assert_setup_guidance() -> None:
+    assert logic.user_friendly_platform_label("Darwin").startswith("macOS / Darwin ")
+    assert "macOS-" not in logic.user_friendly_platform_label("Darwin")
+
+    mac_arm_commands = logic.macos_miniforge_commands("arm64")
+    assert "Miniforge3-MacOSX-arm64.sh" in mac_arm_commands[0]
+    assert mac_arm_commands[1] == "bash Miniforge3.sh"
+
+    mac_intel_commands = logic.macos_miniforge_commands("x86_64")
+    assert "Miniforge3-MacOSX-x86_64.sh" in mac_intel_commands[0]
+
+    linux_report = logic.SystemReport(os_name="Linux", platform_label="Linux-test")
+    linux_guidance = logic.build_setup_guidance(linux_report)
+    assert linux_guidance.has_commands
+    assert "Miniforge3-Linux-x86_64.sh" in linux_guidance.commands[0]
+    assert any("Conda was not found" in message for message in linux_guidance.messages)
+
+    windows_without_wsl = logic.SystemReport(os_name="Windows", platform_label="Windows-test")
+    windows_guidance = logic.build_setup_guidance(windows_without_wsl)
+    assert windows_guidance.commands == ["wsl --install"]
+    assert any("Administrator" in message for message in windows_guidance.messages)
+
+    windows_without_wsl_conda = logic.SystemReport(
+        os_name="Windows",
+        platform_label="Windows-test",
+        wsl_available=True,
+        wsl_conda_available=False,
+    )
+    wsl_guidance = logic.build_setup_guidance(windows_without_wsl_conda)
+    assert "Miniforge3-Linux-x86_64.sh" in wsl_guidance.commands[0]
+    assert any("inside WSL" in message for message in wsl_guidance.messages)
+
+    root_available_report = logic.SystemReport(
+        os_name="Darwin",
+        platform_label="macOS-test",
+        native_conda=["conda"],
+        native_root_available=True,
+    )
+    root_available_guidance = logic.build_setup_guidance(root_available_report)
+    assert root_available_guidance.commands == []
+    assert any("Open ROOT" in message for message in root_available_guidance.messages)
+
+    wsl_root_available_report = logic.SystemReport(
+        os_name="Windows",
+        platform_label="Windows-test",
+        wsl_available=True,
+        wsl_conda_available=True,
+        wsl_root_available=True,
+    )
+    wsl_root_available_guidance = logic.build_setup_guidance(wsl_root_available_report)
+    assert wsl_root_available_guidance.commands == []
+    assert any("Open ROOT" in message for message in wsl_root_available_guidance.messages)
+
+
 def main() -> None:
     parse_python_files()
     assert_safe_environment_name()
     assert_conda_env_parser()
     assert_install_plans()
+    assert_setup_guidance()
     print("ROOTBU validation passed.")
 
 
