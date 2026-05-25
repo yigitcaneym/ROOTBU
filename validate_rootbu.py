@@ -9,12 +9,14 @@ import rootbu_logic as logic
 PROJECT_ROOT = Path(__file__).resolve().parent
 PYTHON_FILES = [
     PROJECT_ROOT / "main.py",
+    PROJECT_ROOT / "installer.py",
     PROJECT_ROOT / "root_installer.py",
     PROJECT_ROOT / "rootbu_logic.py",
     PROJECT_ROOT / "validate_rootbu.py",
 ]
 APP_FILES = [
     PROJECT_ROOT / "main.py",
+    PROJECT_ROOT / "installer.py",
     PROJECT_ROOT / "root_installer.py",
     PROJECT_ROOT / "rootbu_logic.py",
 ]

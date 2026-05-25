@@ -31,4 +31,4 @@ jobs:
       - name: Validate
         run: |
           python validate_rootbu.py
-          python -m py_compile main.py root_installer.py rootbu_logic.py validate_rootbu.py
+          python -m py_compile main.py installer.py root_installer.py rootbu_logic.py validate_rootbu.py
