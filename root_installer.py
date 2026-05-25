@@ -24,6 +24,17 @@ from rootbu_logic import (
     windows_creation_flags,
 )
 
+APP_FOOTER_TEXT = "ROOTBU — Created by Yiğitcan Koç © 2026"
+ABOUT_TEXT = "\n".join(
+    [
+        "ROOTBU",
+        "A beginner-friendly CERN ROOT installer.",
+        "Created and maintained by Yiğitcan Koç with AI-assisted development.",
+        "Copyright © 2026 Yiğitcan Koç.",
+        "License: MIT License.",
+    ]
+)
+
 
 class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
     def __init__(self, parent: "RootBUApp", plan, commands_text: str, platform_label: str) -> None:
@@ -222,7 +233,7 @@ class RootBUApp(ctk.CTk):
         self.prerequisite_button = self._add_prerequisite_button(actions, 3)
 
         log_frame = ctk.CTkFrame(self)
-        log_frame.grid(row=2, column=0, padx=24, pady=(0, 24), sticky="nsew")
+        log_frame.grid(row=2, column=0, padx=24, pady=(0, 10), sticky="nsew")
         log_frame.grid_columnconfigure(0, weight=1)
         log_frame.grid_rowconfigure(1, weight=1)
 
@@ -241,6 +252,31 @@ class RootBUApp(ctk.CTk):
         )
         self.log_box.grid(row=1, column=0, padx=14, pady=(4, 14), sticky="nsew")
         self.log_box.configure(state="disabled")
+
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.grid(row=3, column=0, padx=24, pady=(0, 18), sticky="ew")
+        footer.grid_columnconfigure(0, weight=1)
+
+        footer_label = ctk.CTkLabel(
+            footer,
+            text=APP_FOOTER_TEXT,
+            font=ctk.CTkFont(size=12),
+            text_color=("gray35", "gray65"),
+            anchor="w",
+        )
+        footer_label.grid(row=0, column=0, sticky="ew")
+
+        about_button = ctk.CTkButton(
+            footer,
+            text="About",
+            width=86,
+            height=30,
+            fg_color="transparent",
+            border_width=1,
+            text_color=("gray20", "gray80"),
+            command=self.show_about,
+        )
+        about_button.grid(row=0, column=1, padx=(12, 0), sticky="e")
 
         self.log(STATUS_INFO, "Ready. Run Check System before installing ROOT.")
         self.update_action_states()
@@ -591,6 +627,9 @@ class RootBUApp(ctk.CTk):
 
         self.after(0, show)
         done.wait()
+
+    def show_about(self) -> None:
+        messagebox.showinfo("About ROOTBU", ABOUT_TEXT, parent=self)
 
     def copy_text_to_clipboard(self, text: str) -> None:
         done = threading.Event()

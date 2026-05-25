@@ -16,6 +16,7 @@ PYTHON_FILES = [
     PROJECT_ROOT / "rootbu_logic.py",
     PROJECT_ROOT / "validate_rootbu.py",
 ]
+LICENSE_FILE = PROJECT_ROOT / "LICENSE"
 APP_FILES = [
     PROJECT_ROOT / "main.py",
     PROJECT_ROOT / "installer.py",
@@ -366,6 +367,29 @@ def assert_action_states() -> None:
         os.environ["HOME"] = original_home
 
 
+def assert_attribution_and_license() -> None:
+    app_source = (PROJECT_ROOT / "root_installer.py").read_text(encoding="utf-8")
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    license_text = LICENSE_FILE.read_text(encoding="utf-8")
+
+    assert "ROOTBU — Created by Yiğitcan Koç © 2026" in app_source
+    assert "Created and maintained by Yiğitcan Koç with AI-assisted development." in app_source
+    assert "License: MIT License." in app_source
+
+    assert "## Author" in readme
+    assert "ROOTBU was created and is maintained by Yiğitcan Koç with AI-assisted development." in readme
+    assert "## Copyright" in readme
+    assert "Copyright © 2026 Yiğitcan Koç." in readme
+    assert "## License" in readme
+    assert "ROOTBU is released under the MIT License." in readme
+    assert "## Third-party tools" in readme
+    assert "ROOTBU does not bundle CERN ROOT, Miniforge, conda, or WSL." in readme
+    assert "remain the property of their respective projects" in readme
+
+    assert license_text.startswith("MIT License")
+    assert "Copyright (c) 2026 Yiğitcan Koç" in license_text
+
+
 def main() -> None:
     parse_python_files()
     assert_safe_environment_name()
@@ -378,6 +402,7 @@ def main() -> None:
     assert_interactive_open_plans()
     assert_immediate_miniforge_detection()
     assert_action_states()
+    assert_attribution_and_license()
     print("ROOTBU validation passed.")
 
 

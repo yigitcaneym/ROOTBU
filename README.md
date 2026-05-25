@@ -107,3 +107,19 @@ The validation script checks the Python files and the safe command planning logi
 ```bash
 python validate_rootbu.py
 ```
+
+## Author
+
+ROOTBU was created and is maintained by Yiğitcan Koç with AI-assisted development.
+
+## Copyright
+
+Copyright © 2026 Yiğitcan Koç.
+
+## License
+
+ROOTBU is released under the MIT License.
+
+## Third-party tools
+
+ROOTBU does not bundle CERN ROOT, Miniforge, conda, or WSL. It only guides or runs installer commands after user confirmation. CERN ROOT, Miniforge, conda, and WSL remain the property of their respective projects.
