@@ -22,6 +22,156 @@ from rootbu_logic import (
 )
 
 
+class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
+    def __init__(self, parent: "RootBUApp", plan, commands_text: str, platform_label: str) -> None:
+        super().__init__(parent)
+        self.parent = parent
+        self.commands_text = commands_text
+        self.result = False
+
+        self.title("Install Missing Prerequisite")
+        self.geometry("760x640")
+        self.minsize(680, 560)
+        self.transient(parent)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(3, weight=1)
+
+        title = ctk.CTkLabel(
+            self,
+            text="Install Missing Prerequisite",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            anchor="w",
+        )
+        title.grid(row=0, column=0, padx=22, pady=(20, 8), sticky="ew")
+
+        summary = ctk.CTkFrame(self)
+        summary.grid(row=1, column=0, padx=22, pady=(0, 12), sticky="ew")
+        summary.grid_columnconfigure(1, weight=1)
+        self._add_summary_row(summary, 0, "Missing prerequisite", "Conda / Miniforge")
+        self._add_summary_row(summary, 1, "Target location", plan.install_location or "~/miniforge3")
+        self._add_summary_row(summary, 2, "Platform", platform_label)
+
+        safety = ctk.CTkFrame(self)
+        safety.grid(row=2, column=0, padx=22, pady=(0, 12), sticky="ew")
+        safety.grid_columnconfigure((0, 1), weight=1)
+        safety_title = ctk.CTkLabel(
+            safety,
+            text="Safety",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            anchor="w",
+        )
+        safety_title.grid(row=0, column=0, columnspan=2, padx=14, pady=(12, 4), sticky="ew")
+        safety_points = [
+            "No sudo",
+            "No deletion",
+            "No overwrite of existing ~/miniforge3",
+            "ROOT will not be installed in this step",
+            "conda init will not be run automatically",
+        ]
+        for index, point in enumerate(safety_points):
+            label = ctk.CTkLabel(safety, text=f"- {point}", anchor="w", justify="left")
+            label.grid(row=1 + index // 2, column=index % 2, padx=14, pady=2, sticky="ew")
+
+        preview = ctk.CTkFrame(self)
+        preview.grid(row=3, column=0, padx=22, pady=(0, 12), sticky="nsew")
+        preview.grid_columnconfigure(0, weight=1)
+        preview.grid_rowconfigure(1, weight=1)
+
+        preview_label = ctk.CTkLabel(
+            preview,
+            text="Command Preview",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            anchor="w",
+        )
+        preview_label.grid(row=0, column=0, padx=14, pady=(12, 4), sticky="ew")
+
+        command_box = ctk.CTkTextbox(
+            preview,
+            wrap="word",
+            font=ctk.CTkFont(family="Menlo", size=12),
+            height=170,
+        )
+        command_box.grid(row=1, column=0, padx=14, pady=(4, 14), sticky="nsew")
+        command_box.insert(tk.END, commands_text)
+        command_box.configure(state="disabled")
+
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.grid(row=4, column=0, padx=22, pady=(0, 20), sticky="ew")
+        footer.grid_columnconfigure(1, weight=1)
+
+        self.status_label = ctk.CTkLabel(
+            footer,
+            text="",
+            text_color=("gray30", "gray75"),
+            anchor="w",
+        )
+        self.status_label.grid(row=0, column=0, padx=(0, 12), sticky="ew")
+
+        copy_button = ctk.CTkButton(
+            footer,
+            text="Copy Commands",
+            width=140,
+            command=self.copy_commands,
+        )
+        copy_button.grid(row=0, column=2, padx=(8, 0), sticky="e")
+
+        cancel_button = ctk.CTkButton(
+            footer,
+            text="Cancel",
+            width=110,
+            fg_color="transparent",
+            border_width=1,
+            text_color=("gray10", "gray90"),
+            command=self.cancel,
+        )
+        cancel_button.grid(row=0, column=3, padx=(8, 0), sticky="e")
+
+        install_button = ctk.CTkButton(
+            footer,
+            text="Install Miniforge",
+            width=150,
+            command=self.confirm,
+        )
+        install_button.grid(row=0, column=4, padx=(8, 0), sticky="e")
+
+        self.after(100, self.lift)
+        self.after(120, self.focus_force)
+
+    def _add_summary_row(self, parent: ctk.CTkFrame, row: int, label_text: str, value_text: str) -> None:
+        label = ctk.CTkLabel(
+            parent,
+            text=label_text,
+            text_color=("gray30", "gray75"),
+            anchor="w",
+        )
+        label.grid(row=row, column=0, padx=(14, 12), pady=(10 if row == 0 else 4, 10 if row == 2 else 4), sticky="w")
+
+        value = ctk.CTkLabel(
+            parent,
+            text=value_text,
+            font=ctk.CTkFont(weight="bold"),
+            anchor="w",
+            justify="left",
+        )
+        value.grid(row=row, column=1, padx=(0, 14), pady=(10 if row == 0 else 4, 10 if row == 2 else 4), sticky="ew")
+
+    def copy_commands(self) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(self.commands_text)
+        self.status_label.configure(text="Commands copied.")
+
+    def cancel(self) -> None:
+        self.result = False
+        self.destroy()
+
+    def confirm(self) -> None:
+        self.result = True
+        self.destroy()
+
+
 class RootBUApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -106,7 +256,7 @@ class RootBUApp(ctk.CTk):
     def _add_prerequisite_button(self, parent: ctk.CTkFrame, column: int) -> ctk.CTkButton:
         button = ctk.CTkButton(
             parent,
-            text="Install Missing Prerequisites",
+            text="Install Prerequisites",
             height=44,
             font=ctk.CTkFont(size=14, weight="bold"),
             command=self.install_prerequisites,
@@ -139,11 +289,11 @@ class RootBUApp(ctk.CTk):
             return
 
         if self.prerequisite_plan is None:
-            self.prerequisite_button.configure(text="Install Missing Prerequisites", state="disabled")
+            self.prerequisite_button.configure(text="Install Prerequisites", state="disabled")
             return
 
         if self.prerequisite_plan.needed:
-            self.prerequisite_button.configure(text="Install Missing Prerequisites", state="normal")
+            self.prerequisite_button.configure(text="Install Prerequisites", state="normal")
         else:
             self.prerequisite_button.configure(text="No Prerequisites Needed", state="disabled")
 
@@ -180,7 +330,7 @@ class RootBUApp(ctk.CTk):
         self.run_task("Open ROOT", self._open_root_task)
 
     def install_prerequisites(self) -> None:
-        self.run_task("Install Missing Prerequisites", self._install_prerequisites_task)
+        self.run_task("Install Prerequisites", self._install_prerequisites_task)
 
     def _check_system_task(self):
         report = collect_system_report()
@@ -214,10 +364,7 @@ class RootBUApp(ctk.CTk):
                 self.show_info(plan.title, message)
             return
 
-        confirmed = self.ask_yes_no(
-            "Confirm prerequisite installation",
-            self._prerequisite_confirmation_text(plan),
-        )
+        confirmed = self.ask_prerequisite_confirmation(plan)
         if not confirmed:
             self.log(STATUS_WARN, "Prerequisite installation cancelled before running commands.")
             return
@@ -351,6 +498,44 @@ class RootBUApp(ctk.CTk):
         lines.append("")
         lines.append("Continue?")
         return "\n".join(lines)
+
+    def prerequisite_commands_text(self, plan) -> str:
+        return "\n".join(command_to_text(step.command) for step in plan.steps)
+
+    def prerequisite_platform_label(self, plan) -> str:
+        if plan.context == "Windows / WSL":
+            return "WSL"
+        if plan.context == "Linux":
+            return "Linux"
+        if plan.context == "macOS":
+            if "MacOSX-arm64" in plan.download_url:
+                return "macOS Apple Silicon"
+            if "MacOSX-x86_64" in plan.download_url:
+                return "macOS Intel"
+            return "macOS"
+        return plan.context
+
+    def ask_prerequisite_confirmation(self, plan) -> bool:
+        done = threading.Event()
+        answer = {"value": False}
+
+        def ask() -> None:
+            dialog = PrerequisiteConfirmationDialog(
+                self,
+                plan,
+                self.prerequisite_commands_text(plan),
+                self.prerequisite_platform_label(plan),
+            )
+
+            def finish() -> None:
+                answer["value"] = bool(dialog.result)
+                done.set()
+
+            dialog.bind("<Destroy>", lambda event: finish() if event.widget is dialog and not done.is_set() else None)
+
+        self.after(0, ask)
+        done.wait()
+        return answer["value"]
 
     def ask_yes_no(self, title: str, message: str) -> bool:
         done = threading.Event()

@@ -208,6 +208,16 @@ def assert_prerequisite_plans() -> None:
     assert_no_destructive_prerequisite_commands(wsl_plan)
 
 
+def assert_prerequisite_dialog_ui() -> None:
+    source = (PROJECT_ROOT / "root_installer.py").read_text(encoding="utf-8")
+    assert "class PrerequisiteConfirmationDialog" in source
+    assert 'self.title("Install Missing Prerequisite")' in source
+    assert 'text="Install Prerequisites"' in source
+    assert 'text="Copy Commands"' in source
+    assert 'text="Install Miniforge"' in source
+    assert "messagebox.askyesno(\"Confirm prerequisite installation\"" not in source
+
+
 def main() -> None:
     parse_python_files()
     assert_safe_environment_name()
@@ -215,6 +225,7 @@ def main() -> None:
     assert_install_plans()
     assert_setup_guidance()
     assert_prerequisite_plans()
+    assert_prerequisite_dialog_ui()
     print("ROOTBU validation passed.")
 
 
