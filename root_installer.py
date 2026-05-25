@@ -12,6 +12,7 @@ from rootbu_logic import (
     STATUS_INFO,
     STATUS_OK,
     STATUS_WARN,
+    build_action_state,
     build_install_plan,
     build_open_plan,
     build_prerequisite_plan,
@@ -182,6 +183,7 @@ class RootBUApp(ctk.CTk):
         self.geometry("900x620")
         self.minsize(760, 520)
         self.is_busy = False
+        self.current_report = None
         self.task_buttons: list[ctk.CTkButton] = []
         self.prerequisite_plan = None
         self.prerequisite_button: ctk.CTkButton | None = None
@@ -241,7 +243,7 @@ class RootBUApp(ctk.CTk):
         self.log_box.configure(state="disabled")
 
         self.log(STATUS_INFO, "Ready. Run Check System before installing ROOT.")
-        self.update_prerequisite_button_state()
+        self.update_action_states()
 
     def _add_task_button(self, parent: ctk.CTkFrame, column: int, text: str, command) -> ctk.CTkButton:
         button = ctk.CTkButton(
@@ -266,10 +268,10 @@ class RootBUApp(ctk.CTk):
         button.grid(row=0, column=column, padx=8, pady=12, sticky="ew")
         return button
 
-    def log(self, level: str, message: str, *, decorate: bool = True) -> None:
+    def log(self, level: str, message: str, *, decorate: bool = False) -> None:
         self.after(0, self._append_log, level, message, decorate)
 
-    def _append_log(self, level: str, message: str, decorate: bool = True) -> None:
+    def _append_log(self, level: str, message: str, decorate: bool = False) -> None:
         lines = clean_command_output_lines(message)
         if not lines:
             return
@@ -284,30 +286,37 @@ class RootBUApp(ctk.CTk):
 
     def set_busy(self, busy: bool) -> None:
         self.is_busy = busy
-        state = "disabled" if busy else "normal"
-        for button in self.task_buttons:
-            button.configure(state=state)
-        self.update_prerequisite_button_state()
+        self.update_action_states()
 
-    def update_prerequisite_button_state(self) -> None:
-        if not self.prerequisite_button:
-            return
+    def update_action_states(self) -> None:
         if self.is_busy:
-            self.prerequisite_button.configure(state="disabled")
+            for button in self.task_buttons:
+                button.configure(state="disabled")
+            if self.prerequisite_button:
+                self.prerequisite_button.configure(state="disabled")
             return
 
-        if self.prerequisite_plan is None:
-            self.prerequisite_button.configure(text="Install Prerequisites", state="disabled")
-            return
+        self.check_button.configure(state="normal")
+        state = build_action_state(self.current_report)
+        self.install_button.configure(
+            text=state.install_root_label,
+            state="normal" if state.install_root_enabled else "disabled",
+        )
+        self.open_button.configure(
+            text=state.open_root_label,
+            state="normal" if state.open_root_enabled else "disabled",
+        )
 
-        if self.prerequisite_plan.needed:
-            self.prerequisite_button.configure(text="Install Prerequisites", state="normal")
-        else:
-            self.prerequisite_button.configure(text="No Prerequisites Needed", state="disabled")
+        if self.prerequisite_button:
+            self.prerequisite_button.configure(
+                text=state.install_prerequisites_label,
+                state="normal" if state.install_prerequisites_enabled else "disabled",
+            )
 
-    def set_prerequisite_plan(self, plan) -> None:
-        self.prerequisite_plan = plan
-        self.update_prerequisite_button_state()
+    def set_current_report(self, report) -> None:
+        self.current_report = report
+        self.prerequisite_plan = build_prerequisite_plan(report)
+        self.update_action_states()
 
     def run_task(self, name: str, target) -> None:
         if self.is_busy:
@@ -323,7 +332,7 @@ class RootBUApp(ctk.CTk):
         try:
             target()
         except Exception as exc:
-            self.log(STATUS_ERROR, f"{name} failed: {exc}")
+            self.log(STATUS_ERROR, f"{name} failed: {exc}", decorate=True)
         finally:
             self.log(STATUS_INFO, f"Finished: {name}")
             self.after(0, self.set_busy, False)
@@ -341,24 +350,23 @@ class RootBUApp(ctk.CTk):
         self.run_task("Install Prerequisites", self._install_prerequisites_task)
 
     def _check_system_task(self):
+        self.refresh_system_state()
+
+    def refresh_system_state(self):
         report = collect_system_report()
         self._log_report(report)
         guidance = build_setup_guidance(report)
         self._log_guidance(guidance)
-        prerequisite_plan = build_prerequisite_plan(report)
-        self.after(0, self.set_prerequisite_plan, prerequisite_plan)
+        self.after(0, self.set_current_report, report)
+        return report
 
     def _install_prerequisites_task(self):
-        report = collect_system_report()
-        self._log_report(report)
-        guidance = build_setup_guidance(report)
-        self._log_guidance(guidance)
+        report = self.refresh_system_state()
         plan = build_prerequisite_plan(report)
-        self.after(0, self.set_prerequisite_plan, plan)
         self._log_prerequisite_plan(plan)
 
         if not plan.needed:
-            self.log(STATUS_OK, "No missing prerequisites were detected.")
+            self.log(STATUS_OK, "No missing prerequisites were detected.", decorate=True)
             return
 
         if not plan.can_run:
@@ -367,30 +375,31 @@ class RootBUApp(ctk.CTk):
                 copy_commands = self.ask_yes_no(plan.title, message + "\n\nCopy the manual command(s) to the clipboard?")
                 if copy_commands:
                     self.copy_text_to_clipboard("\n".join(plan.manual_commands))
-                    self.log(STATUS_OK, "Manual prerequisite command(s) copied to the clipboard.")
+                    self.log(STATUS_OK, "Manual prerequisite command(s) copied to the clipboard.", decorate=True)
             else:
                 self.show_info(plan.title, message)
             return
 
         confirmed = self.ask_prerequisite_confirmation(plan)
         if not confirmed:
-            self.log(STATUS_WARN, "Prerequisite installation cancelled before running commands.")
+            self.log(STATUS_WARN, "Prerequisite installation cancelled before running commands.", decorate=True)
             return
 
         for step in plan.steps:
             self.log(STATUS_INFO, step.label)
             exit_code = self.stream_command(step.command)
             if exit_code != 0:
-                self.log(STATUS_ERROR, f"Command exited with code {exit_code}.")
+                self.log(STATUS_ERROR, f"Command exited with code {exit_code}.", decorate=True)
                 return
 
-        self.log(STATUS_OK, "Finished prerequisite installation.")
-        self.log(STATUS_INFO, "Please run Check System again.")
-        self.after(0, self.set_prerequisite_plan, None)
+        self.log(STATUS_OK, "Finished prerequisite installation.", decorate=True)
+        self.log(STATUS_INFO, "Refreshing Check System after prerequisite installation.")
+        self.refresh_system_state()
 
     def _install_root_task(self):
         report = collect_system_report()
         self._log_report(report)
+        self.after(0, self.set_current_report, report)
         plan = build_install_plan(report)
 
         self.log(STATUS_INFO, f"Install context: {plan.context}")
@@ -398,7 +407,14 @@ class RootBUApp(ctk.CTk):
             self.log(STATUS_INFO, message)
 
         if not plan.has_commands:
-            self.log(STATUS_WARN, "No installation command will be run.")
+            if report.os_name == "Windows":
+                conda_missing = not report.wsl_conda_available
+            else:
+                conda_missing = report.native_conda is None
+            if conda_missing:
+                self.log(STATUS_WARN, "Install ROOT is disabled until conda is detected. Run Check System or Install Prerequisites first.", decorate=True)
+            else:
+                self.log(STATUS_WARN, "No installation command will be run.", decorate=True)
             return
 
         self.log(STATUS_INFO, "Dry run: ROOTBU would run the following command.")
@@ -410,19 +426,22 @@ class RootBUApp(ctk.CTk):
             "ROOTBU will run only the command shown in the log. Continue?",
         )
         if not confirmed:
-            self.log(STATUS_WARN, "Installation cancelled before running commands.")
+            self.log(STATUS_WARN, "Installation cancelled before running commands.", decorate=True)
             return
 
         for command in plan.commands:
             exit_code = self.stream_command(command)
             if exit_code != 0:
-                self.log(STATUS_ERROR, f"Command exited with code {exit_code}.")
+                self.log(STATUS_ERROR, f"Command exited with code {exit_code}.", decorate=True)
                 return
 
-        self.log(STATUS_OK, "ROOT installation command finished successfully.")
+        self.log(STATUS_OK, "ROOT installation command finished successfully.", decorate=True)
+        self.log(STATUS_INFO, "Refreshing Check System after ROOT installation.")
+        self.refresh_system_state()
 
     def _open_root_task(self):
         report = collect_system_report()
+        self.after(0, self.set_current_report, report)
         plan = build_open_plan(report)
 
         self.log(STATUS_INFO, f"Open context: {plan.context}")
@@ -431,10 +450,10 @@ class RootBUApp(ctk.CTk):
 
         if not plan.can_open or plan.command is None:
             if plan.manual_command:
-                self.log(STATUS_WARN, "ROOTBU could not find a terminal launcher for this platform.")
+                self.log(STATUS_WARN, "ROOTBU could not find a terminal launcher for this platform.", decorate=True)
                 self.log(STATUS_INFO, f"Manual command: {plan.manual_command}")
                 return
-            self.log(STATUS_ERROR, "ROOT is not available. Run Check System or Install ROOT first.")
+            self.log(STATUS_ERROR, "ROOT is not available. Run Check System or Install ROOT first.", decorate=True)
             return
 
         if plan.manual_command:
@@ -447,15 +466,15 @@ class RootBUApp(ctk.CTk):
                 start_new_session=True,
             )
         except OSError as exc:
-            self.log(STATUS_ERROR, f"Could not open ROOT: {exc}")
+            self.log(STATUS_ERROR, f"Could not open ROOT: {exc}", decorate=True)
             return
 
-        self.log(STATUS_OK, "Interactive ROOT terminal launch command started.")
+        self.log(STATUS_OK, "Interactive ROOT terminal launch command started.", decorate=True)
 
     def _log_report(self, report) -> None:
-        self.log(STATUS_INFO, f"Detected OS: {report.platform_label}")
+        self.log(STATUS_INFO, f"Detected OS: {report.platform_label}", decorate=True)
         for item in report.checks:
-            self.log(item.status, f"{item.name}: {item.detail}")
+            self.log(item.status, f"{item.name}: {item.detail}", decorate=True)
 
     def _log_guidance(self, guidance) -> None:
         self.log(STATUS_INFO, guidance.title)

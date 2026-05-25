@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
+import tempfile
 
 import rootbu_logic as logic
 
@@ -295,6 +297,75 @@ def assert_interactive_open_plans() -> None:
     assert "conda run" not in " ".join(windows_plan.command)
 
 
+def assert_immediate_miniforge_detection() -> None:
+    original_home = os.environ.get("HOME")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ["HOME"] = tmpdir
+        expected_conda = str(Path(tmpdir) / "miniforge3" / "bin" / "conda")
+
+        def runner(command: list[str], _timeout: int) -> logic.ProbeResult:
+            if command == [expected_conda, "--version"]:
+                return logic.ProbeResult(0, "conda 26.3.2")
+            if command == [expected_conda, "env", "list"]:
+                return logic.ProbeResult(0, "# conda environments:\nbase  *  /tmp/miniforge3\n")
+            return logic.ProbeResult(127, "")
+
+        report = logic.collect_system_report(runner=runner, os_name="Darwin")
+        assert report.native_conda == [expected_conda]
+        assert report.native_conda_detail == "conda 26.3.2"
+        assert any(item.name == "Conda (native)" and item.status == logic.STATUS_OK for item in report.checks)
+
+    if original_home is None:
+        os.environ.pop("HOME", None)
+    else:
+        os.environ["HOME"] = original_home
+
+
+def assert_action_states() -> None:
+    original_home = os.environ.get("HOME")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ["HOME"] = tmpdir
+
+        startup = logic.build_action_state(None)
+        assert not startup.install_prerequisites_enabled
+        assert not startup.install_root_enabled
+        assert not startup.open_root_enabled
+
+        missing_conda = logic.SystemReport(os_name="Darwin", platform_label="macOS-test")
+        missing_state = logic.build_action_state(missing_conda)
+        assert missing_state.install_prerequisites_enabled
+        assert not missing_state.install_root_enabled
+        assert not missing_state.open_root_enabled
+
+        conda_no_root = logic.SystemReport(
+            os_name="Darwin",
+            platform_label="macOS-test",
+            native_conda=["/tmp/miniforge3/bin/conda"],
+            native_env_exists=False,
+        )
+        conda_state = logic.build_action_state(conda_no_root)
+        assert not conda_state.install_prerequisites_enabled
+        assert conda_state.install_root_enabled
+        assert not conda_state.open_root_enabled
+
+        root_in_env = logic.SystemReport(
+            os_name="Darwin",
+            platform_label="macOS-test",
+            native_conda=["/tmp/miniforge3/bin/conda"],
+            native_env_exists=True,
+            native_root_in_env=True,
+        )
+        root_state = logic.build_action_state(root_in_env)
+        assert not root_state.install_root_enabled
+        assert root_state.install_root_label == "ROOT Installed"
+        assert root_state.open_root_enabled
+
+    if original_home is None:
+        os.environ.pop("HOME", None)
+    else:
+        os.environ["HOME"] = original_home
+
+
 def main() -> None:
     parse_python_files()
     assert_safe_environment_name()
@@ -305,6 +376,8 @@ def main() -> None:
     assert_prerequisite_dialog_ui()
     assert_log_formatting()
     assert_interactive_open_plans()
+    assert_immediate_miniforge_detection()
+    assert_action_states()
     print("ROOTBU validation passed.")
 
 

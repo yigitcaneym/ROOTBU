@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 import platform
 import re
 import shlex
@@ -74,6 +75,7 @@ class SystemReport:
     native_root_command: Command | None = None
     wsl_available: bool = False
     wsl_conda_available: bool = False
+    wsl_conda_command: str = ""
     wsl_env_exists: bool = False
     wsl_root_in_env: bool = False
     wsl_root_available: bool = False
@@ -141,6 +143,16 @@ class SetupGuidance:
         return bool(self.commands)
 
 
+@dataclass
+class ActionState:
+    install_prerequisites_enabled: bool = False
+    install_prerequisites_label: str = "Install Prerequisites"
+    install_root_enabled: bool = False
+    install_root_label: str = "Install ROOT"
+    open_root_enabled: bool = False
+    open_root_label: str = "Open ROOT"
+
+
 Runner = Callable[[Command, int], ProbeResult]
 
 
@@ -169,6 +181,21 @@ def run_probe(command: Command, timeout: int = 12) -> ProbeResult:
 
 def command_to_text(command: Iterable[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
+
+
+def home_dir() -> Path:
+    return Path(os.path.expanduser("~"))
+
+
+def native_miniforge_dir() -> Path:
+    return home_dir() / "miniforge3"
+
+
+def native_miniforge_conda_path(os_name: str | None = None) -> Path:
+    system = os_name or platform.system()
+    if system == "Windows":
+        return native_miniforge_dir() / "Scripts" / "conda.exe"
+    return native_miniforge_dir() / "bin" / "conda"
 
 
 def status_icon(level: str) -> str:
@@ -222,6 +249,44 @@ def first_output_line(output: str) -> str:
     return ""
 
 
+def first_conda_version_line(output: str) -> str:
+    for line in output.splitlines():
+        clean = line.strip()
+        if clean and not clean.startswith("__ROOTBU_CONDA__="):
+            return clean
+    return ""
+
+
+def wsl_conda_probe_script() -> str:
+    return (
+        'if command -v conda >/dev/null 2>&1; then '
+        'CONDA_CMD="$(command -v conda)"; '
+        'elif [ -x "$HOME/miniforge3/bin/conda" ]; then '
+        'CONDA_CMD="$HOME/miniforge3/bin/conda"; '
+        'else exit 127; fi; '
+        'printf "__ROOTBU_CONDA__=%s\\n" "$CONDA_CMD"; '
+        '"$CONDA_CMD" --version'
+    )
+
+
+def parse_wsl_conda_command(output: str) -> str:
+    for line in output.splitlines():
+        clean = line.strip()
+        if clean.startswith("__ROOTBU_CONDA__="):
+            return clean.split("=", 1)[1]
+    return "conda"
+
+
+def shell_expr(text: str) -> str:
+    if text.startswith("$HOME/"):
+        return f'"{text}"'
+    return shlex.quote(text)
+
+
+def wsl_conda_shell_expr(report: SystemReport) -> str:
+    return shell_expr(report.wsl_conda_command or "conda")
+
+
 def user_friendly_platform_label(os_name: str | None = None) -> str:
     system = os_name or platform.system()
     machine = platform.machine() or "unknown architecture"
@@ -255,11 +320,13 @@ def parse_conda_env_names(output: str) -> set[str]:
 
 def conda_candidates(os_name: str | None = None) -> list[Command]:
     system = os_name or platform.system()
-    home = Path.home()
+    home = home_dir()
     candidates: list[Command] = []
     path_conda = shutil.which("conda")
     if path_conda:
         candidates.append([path_conda])
+
+    candidates.append([str(native_miniforge_conda_path(system))])
 
     if system == "Windows":
         known_paths = [
@@ -267,7 +334,7 @@ def conda_candidates(os_name: str | None = None) -> list[Command]:
             home / "miniconda3" / "condabin" / "conda.bat",
             home / "anaconda3" / "Scripts" / "conda.exe",
             home / "anaconda3" / "condabin" / "conda.bat",
-            home / "miniforge3" / "Scripts" / "conda.exe",
+            home / "miniforge3" / "condabin" / "conda.bat",
             home / "mambaforge" / "Scripts" / "conda.exe",
         ]
     else:
@@ -279,8 +346,7 @@ def conda_candidates(os_name: str | None = None) -> list[Command]:
         ]
 
     for path in known_paths:
-        if path.exists():
-            candidates.append([str(path)])
+        candidates.append([str(path)])
 
     unique: list[Command] = []
     seen: set[str] = set()
@@ -343,8 +409,8 @@ def run_wsl_probe(script: str, runner: Runner, timeout: int = 15) -> ProbeResult
     return runner(["wsl", "bash", "-lc", script], timeout)
 
 
-def collect_system_report(runner: Runner = run_probe) -> SystemReport:
-    os_name = platform.system()
+def collect_system_report(runner: Runner = run_probe, os_name: str | None = None) -> SystemReport:
+    os_name = os_name or platform.system()
     platform_label = user_friendly_platform_label(os_name)
     report = SystemReport(os_name=os_name, platform_label=platform_label)
 
@@ -387,16 +453,17 @@ def collect_system_report(runner: Runner = run_probe) -> SystemReport:
         report.checks.append(CheckItem("ROOT (native)", STATUS_WARN, root_detail))
 
     if os_name == "Windows" and report.wsl_available:
-        wsl_conda = run_wsl_probe("command -v conda >/dev/null 2>&1 && conda --version", runner)
+        wsl_conda = run_wsl_probe(wsl_conda_probe_script(), runner)
         report.wsl_conda_available = wsl_conda.returncode == 0
         if report.wsl_conda_available:
-            report.checks.append(CheckItem("Conda (WSL)", STATUS_OK, first_output_line(wsl_conda.stdout) or "Conda is available in WSL."))
-            wsl_env_list = run_wsl_probe("conda env list", runner)
+            report.wsl_conda_command = parse_wsl_conda_command(wsl_conda.stdout)
+            report.checks.append(CheckItem("Conda (WSL)", STATUS_OK, first_conda_version_line(wsl_conda.stdout) or "Conda is available in WSL."))
+            wsl_env_list = run_wsl_probe(f"{wsl_conda_shell_expr(report)} env list", runner)
             report.wsl_env_exists = ENV_NAME in parse_conda_env_names(wsl_env_list.stdout) if wsl_env_list.returncode == 0 else False
             env_detail = f"Project environment {ENV_NAME} exists in WSL." if report.wsl_env_exists else f"{ENV_NAME} does not exist in WSL yet."
             report.checks.append(CheckItem("Project env (WSL)", STATUS_OK if report.wsl_env_exists else STATUS_INFO, env_detail))
             if report.wsl_env_exists:
-                report.wsl_root_in_env = run_wsl_probe(f"conda run -n {ENV_NAME} root --version", runner, 20).returncode == 0
+                report.wsl_root_in_env = run_wsl_probe(f"{wsl_conda_shell_expr(report)} run -n {ENV_NAME} root --version", runner, 20).returncode == 0
         else:
             report.checks.append(CheckItem("Conda (WSL)", STATUS_WARN, missing_wsl_conda_message()))
 
@@ -431,10 +498,10 @@ def build_install_plan(report: SystemReport) -> InstallPlan:
             messages.append(f"ROOT is already available in WSL environment {ENV_NAME}.")
             return InstallPlan("Windows / WSL", messages, [])
         if report.wsl_env_exists:
-            command = ["wsl", "bash", "-lc", f"conda install -y -n {ENV_NAME} -c {CONDA_CHANNEL} {ROOT_PACKAGE}"]
+            command = ["wsl", "bash", "-lc", f"{wsl_conda_shell_expr(report)} install -y -n {ENV_NAME} -c {CONDA_CHANNEL} {ROOT_PACKAGE}"]
             messages.append(f"{ENV_NAME} exists in WSL; ROOTBU will add ROOT to that project environment.")
         else:
-            command = ["wsl", "bash", "-lc", f"conda create -y -n {ENV_NAME} -c {CONDA_CHANNEL} {ROOT_PACKAGE}"]
+            command = ["wsl", "bash", "-lc", f"{wsl_conda_shell_expr(report)} create -y -n {ENV_NAME} -c {CONDA_CHANNEL} {ROOT_PACKAGE}"]
             messages.append(f"ROOTBU will create the WSL conda environment {ENV_NAME}.")
         return InstallPlan("Windows / WSL", messages, [command])
 
@@ -595,6 +662,49 @@ def build_open_plan(
     return OpenPlan(report.os_name, messages, None)
 
 
+def conda_available_for_root_install(report: SystemReport) -> bool:
+    if report.os_name == "Windows":
+        return report.wsl_available and report.wsl_conda_available
+    return report.native_conda is not None
+
+
+def root_available_for_open(report: SystemReport) -> bool:
+    if report.os_name == "Windows":
+        return report.wsl_root_in_env or report.wsl_root_available
+    return report.native_root_in_env or report.native_root_available
+
+
+def root_installed_in_project_env(report: SystemReport) -> bool:
+    return report.wsl_root_in_env if report.os_name == "Windows" else report.native_root_in_env
+
+
+def build_action_state(report: SystemReport | None) -> ActionState:
+    if report is None:
+        return ActionState()
+
+    prerequisite_plan = build_prerequisite_plan(report)
+    prerequisite_enabled = prerequisite_plan.needed and prerequisite_plan.can_run
+    if prerequisite_enabled:
+        prerequisite_label = "Install Prerequisites"
+    elif prerequisite_plan.needed and prerequisite_plan.has_manual_commands:
+        prerequisite_label = "Manual Setup Needed"
+    else:
+        prerequisite_label = "No Prerequisites Needed"
+
+    root_installed = root_installed_in_project_env(report)
+    conda_available = conda_available_for_root_install(report)
+    open_available = root_available_for_open(report)
+
+    return ActionState(
+        install_prerequisites_enabled=prerequisite_enabled,
+        install_prerequisites_label=prerequisite_label,
+        install_root_enabled=conda_available and not root_installed,
+        install_root_label="ROOT Installed" if root_installed else "Install ROOT",
+        open_root_enabled=open_available,
+        open_root_label="Open ROOT",
+    )
+
+
 def miniforge_installer_name(os_name: str, machine: str | None = None) -> str:
     arch = machine or platform.machine()
     if os_name == "Darwin":
@@ -727,7 +837,7 @@ def build_prerequisite_plan(
             messages=["Conda is available. Use Install ROOT when you are ready."],
         )
 
-    target_exists = Path.home().joinpath("miniforge3").exists() if native_miniforge_exists is None else native_miniforge_exists
+    target_exists = native_miniforge_dir().exists() if native_miniforge_exists is None else native_miniforge_exists
     if target_exists:
         return PrerequisitePlan(
             context=report.os_name,
