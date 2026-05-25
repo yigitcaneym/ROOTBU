@@ -216,7 +216,7 @@ class RootBUApp(ctk.CTk):
 
         subtitle = ctk.CTkLabel(
             header,
-            text="CERN ROOT setup with checks, confirmation, and a project conda environment.",
+            text="A beginner-friendly way to install, check, and open CERN ROOT.",
             font=ctk.CTkFont(size=14),
             text_color=("gray25", "gray75"),
             anchor="w",
