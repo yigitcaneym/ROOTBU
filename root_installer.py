@@ -1,127 +1,250 @@
-import platform
+from __future__ import annotations
+
 import subprocess
 import threading
 import tkinter as tk
 from tkinter import messagebox
 
-WINDOWS_INSTALL_COMMAND = ["powershell", "-Command", "wsl --install"]
-LINUX_INSTALL_SCRIPT = """
-set -e
-mkdir -p ~/miniconda3
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
-bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
-rm -rf ~/miniconda3/miniconda.sh
-~/miniconda3/bin/conda init bash
-~/miniconda3/bin/conda init zsh
-~/miniconda3/bin/conda config --set channel_priority strict
-~/miniconda3/bin/conda create -y -n root_env -c conda-forge root
-~/miniconda3/bin/conda config --env --add channels conda-forge
-"""
-LINUX_OPEN_ROOT_COMMAND = "source ~/miniconda3/bin/activate root_env && root"
+import customtkinter as ctk
+
+from rootbu_logic import (
+    STATUS_ERROR,
+    STATUS_INFO,
+    STATUS_OK,
+    STATUS_WARN,
+    build_install_plan,
+    build_open_plan,
+    collect_system_report,
+    command_to_text,
+    windows_creation_flags,
+)
 
 
-def run_command(command, log_widget, button_to_disable=None, shell=False):
-    def worker():
-        if button_to_disable:
-            button_to_disable.config(state=tk.DISABLED)
+class RootBUApp(ctk.CTk):
+    def __init__(self) -> None:
+        super().__init__()
+
+        self.title("ROOTBU")
+        self.geometry("900x620")
+        self.minsize(760, 520)
+        self.is_busy = False
+        self.buttons: list[ctk.CTkButton] = []
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, padx=24, pady=(22, 10), sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+
+        title = ctk.CTkLabel(
+            header,
+            text="ROOTBU",
+            font=ctk.CTkFont(size=32, weight="bold"),
+            anchor="w",
+        )
+        title.grid(row=0, column=0, sticky="ew")
+
+        subtitle = ctk.CTkLabel(
+            header,
+            text="CERN ROOT setup with checks, confirmation, and a project conda environment.",
+            font=ctk.CTkFont(size=14),
+            text_color=("gray25", "gray75"),
+            anchor="w",
+        )
+        subtitle.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+
+        actions = ctk.CTkFrame(self)
+        actions.grid(row=1, column=0, padx=24, pady=(6, 14), sticky="ew")
+        actions.grid_columnconfigure((0, 1, 2), weight=1, uniform="actions")
+
+        self.check_button = self._add_button(actions, 0, "Check System", self.check_system)
+        self.install_button = self._add_button(actions, 1, "Install ROOT", self.install_root)
+        self.open_button = self._add_button(actions, 2, "Open ROOT", self.open_root)
+
+        log_frame = ctk.CTkFrame(self)
+        log_frame.grid(row=2, column=0, padx=24, pady=(0, 24), sticky="nsew")
+        log_frame.grid_columnconfigure(0, weight=1)
+        log_frame.grid_rowconfigure(1, weight=1)
+
+        log_label = ctk.CTkLabel(
+            log_frame,
+            text="Log",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            anchor="w",
+        )
+        log_label.grid(row=0, column=0, padx=14, pady=(12, 4), sticky="ew")
+
+        self.log_box = ctk.CTkTextbox(
+            log_frame,
+            wrap="word",
+            font=ctk.CTkFont(family="Menlo", size=12),
+        )
+        self.log_box.grid(row=1, column=0, padx=14, pady=(4, 14), sticky="nsew")
+        self.log_box.configure(state="disabled")
+
+        self.log(STATUS_INFO, "Ready. Run Check System before installing ROOT.")
+
+    def _add_button(self, parent: ctk.CTkFrame, column: int, text: str, command) -> ctk.CTkButton:
+        button = ctk.CTkButton(
+            parent,
+            text=text,
+            height=44,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            command=command,
+        )
+        button.grid(row=0, column=column, padx=8, pady=12, sticky="ew")
+        self.buttons.append(button)
+        return button
+
+    def log(self, level: str, message: str) -> None:
+        self.after(0, self._append_log, level, message)
+
+    def _append_log(self, level: str, message: str) -> None:
+        self.log_box.configure(state="normal")
+        for line in str(message).splitlines() or [""]:
+            self.log_box.insert(tk.END, f"[{level}] {line}\n")
+        self.log_box.see(tk.END)
+        self.log_box.configure(state="disabled")
+
+    def set_busy(self, busy: bool) -> None:
+        self.is_busy = busy
+        state = "disabled" if busy else "normal"
+        for button in self.buttons:
+            button.configure(state=state)
+
+    def run_task(self, name: str, target) -> None:
+        if self.is_busy:
+            self.log(STATUS_WARN, "A task is already running.")
+            return
+
+        self.set_busy(True)
+        self.log(STATUS_INFO, f"Starting: {name}")
+        thread = threading.Thread(target=self._task_wrapper, args=(name, target), daemon=True)
+        thread.start()
+
+    def _task_wrapper(self, name: str, target) -> None:
         try:
-            log_widget.insert(tk.END, f"$ {command if isinstance(command, str) else ' '.join(command)}\n")
-            log_widget.see(tk.END)
-            result = subprocess.run(
-                command,
-                shell=shell,
-                check=True,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            if result.stdout:
-                log_widget.insert(tk.END, result.stdout)
-        except subprocess.CalledProcessError as exc:
-            log_widget.insert(tk.END, f"Command failed with exit code {exc.returncode}.\n")
-            if exc.stdout:
-                log_widget.insert(tk.END, exc.stdout)
+            target()
+        except Exception as exc:
+            self.log(STATUS_ERROR, f"{name} failed: {exc}")
         finally:
-            log_widget.insert(tk.END, "\n")
-            log_widget.see(tk.END)
-            if button_to_disable:
-                button_to_disable.config(state=tk.NORMAL)
+            self.log(STATUS_INFO, f"Finished: {name}")
+            self.after(0, self.set_busy, False)
 
-    threading.Thread(target=worker, daemon=True).start()
+    def check_system(self) -> None:
+        self.run_task("Check System", self._check_system_task)
+
+    def install_root(self) -> None:
+        self.run_task("Install ROOT", self._install_root_task)
+
+    def open_root(self) -> None:
+        self.run_task("Open ROOT", self._open_root_task)
+
+    def _check_system_task(self):
+        report = collect_system_report()
+        self._log_report(report)
+
+    def _install_root_task(self):
+        report = collect_system_report()
+        self._log_report(report)
+        plan = build_install_plan(report)
+
+        self.log(STATUS_INFO, f"Install context: {plan.context}")
+        for message in plan.messages:
+            self.log(STATUS_INFO, message)
+
+        if not plan.has_commands:
+            self.log(STATUS_WARN, "No installation command will be run.")
+            return
+
+        self.log(STATUS_INFO, "Dry run: ROOTBU would run the following command.")
+        for command in plan.commands:
+            self.log(STATUS_INFO, f"$ {command_to_text(command)}")
+
+        confirmed = self.ask_yes_no(
+            "Confirm ROOT installation",
+            "ROOTBU will run only the command shown in the log. Continue?",
+        )
+        if not confirmed:
+            self.log(STATUS_WARN, "Installation cancelled before running commands.")
+            return
+
+        for command in plan.commands:
+            exit_code = self.stream_command(command)
+            if exit_code != 0:
+                self.log(STATUS_ERROR, f"Command exited with code {exit_code}.")
+                return
+
+        self.log(STATUS_OK, "ROOT installation command finished successfully.")
+
+    def _open_root_task(self):
+        report = collect_system_report()
+        plan = build_open_plan(report)
+
+        self.log(STATUS_INFO, f"Open context: {plan.context}")
+        for message in plan.messages:
+            self.log(STATUS_INFO, message)
+
+        if not plan.can_open or plan.command is None:
+            self.log(STATUS_ERROR, "ROOT is not available. Run Check System or Install ROOT first.")
+            return
+
+        self.log(STATUS_INFO, f"$ {command_to_text(plan.command)}")
+        try:
+            subprocess.Popen(
+                plan.command,
+                creationflags=windows_creation_flags(),
+                start_new_session=True,
+            )
+        except OSError as exc:
+            self.log(STATUS_ERROR, f"Could not open ROOT: {exc}")
+            return
+
+        self.log(STATUS_OK, "ROOT launch command started.")
+
+    def _log_report(self, report) -> None:
+        self.log(STATUS_INFO, f"Detected OS: {report.os_name}")
+        for item in report.checks:
+            self.log(item.status, f"{item.name}: {item.detail}")
+
+    def ask_yes_no(self, title: str, message: str) -> bool:
+        done = threading.Event()
+        answer = {"value": False}
+
+        def ask() -> None:
+            answer["value"] = bool(messagebox.askyesno(title, message, parent=self))
+            done.set()
+
+        self.after(0, ask)
+        done.wait()
+        return answer["value"]
+
+    def stream_command(self, command: list[str]) -> int:
+        self.log(STATUS_INFO, f"Running: {command_to_text(command)}")
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            creationflags=windows_creation_flags(),
+        )
+
+        if process.stdout:
+            for line in process.stdout:
+                clean = line.rstrip()
+                if clean:
+                    self.log(STATUS_INFO, clean)
+
+        return process.wait()
 
 
-def install_windows(log_widget, button):
-    if platform.system() != "Windows":
-        messagebox.showinfo("Not on Windows", "Windows installation is only available on Windows 10 (19041+) or later.")
-        return
-    run_command(WINDOWS_INSTALL_COMMAND, log_widget, button)
-
-
-def install_linux(log_widget, button):
-    if platform.system() != "Linux":
-        messagebox.showinfo("Not on Linux", "Linux installation is only available on Ubuntu/Linux.")
-        return
-    run_command(LINUX_INSTALL_SCRIPT, log_widget, button, shell=True)
-
-
-def open_root_linux(log_widget, button):
-    if platform.system() != "Linux":
-        messagebox.showinfo("Not on Linux", "ROOT can be launched from Linux after installation.")
-        return
-    run_command(f"bash -lc '{LINUX_OPEN_ROOT_COMMAND}'", log_widget, button, shell=True)
-
-
-def main():
-    root = tk.Tk()
-    root.title("ROOT Installer")
-    root.geometry("720x480")
-
-    header = tk.Label(
-        root,
-        text="ROOT tek-tuş kurulum ve açma aracı",
-        font=("Helvetica", 16, "bold"),
-    )
-    header.pack(pady=12)
-
-    info_text = (
-        "Windows 10 (19041+) için: WSL kurulumu PowerShell üzerinden yapılır.\n"
-        "Linux için: Miniconda ve ROOT kurulumu yapılır. Terminali kapatıp açmanız gerekir.\n"
-        "ROOT'u her açışta: conda activate root_env && root"
-    )
-    info = tk.Label(root, text=info_text, justify=tk.LEFT)
-    info.pack(pady=8)
-
-    button_frame = tk.Frame(root)
-    button_frame.pack(pady=8)
-
-    log_widget = tk.Text(root, height=15, width=90)
-    log_widget.pack(padx=12, pady=10, fill=tk.BOTH, expand=True)
-
-    windows_button = tk.Button(
-        button_frame,
-        text="Windows WSL Kurulumu",
-        width=25,
-        command=lambda: install_windows(log_widget, windows_button),
-    )
-    windows_button.grid(row=0, column=0, padx=8, pady=4)
-
-    linux_button = tk.Button(
-        button_frame,
-        text="Linux ROOT Kurulumu",
-        width=25,
-        command=lambda: install_linux(log_widget, linux_button),
-    )
-    linux_button.grid(row=0, column=1, padx=8, pady=4)
-
-    open_root_button = tk.Button(
-        button_frame,
-        text="ROOT'u Aç (Linux)",
-        width=25,
-        command=lambda: open_root_linux(log_widget, open_root_button),
-    )
-    open_root_button.grid(row=0, column=2, padx=8, pady=4)
-
-    root.mainloop()
+def main() -> None:
+    ctk.set_appearance_mode("System")
+    ctk.set_default_color_theme("blue")
+    app = RootBUApp()
+    app.mainloop()
 
 
 if __name__ == "__main__":
