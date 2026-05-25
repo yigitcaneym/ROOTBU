@@ -16,8 +16,10 @@ from rootbu_logic import (
     build_open_plan,
     build_prerequisite_plan,
     build_setup_guidance,
+    clean_command_output_lines,
     collect_system_report,
     command_to_text,
+    status_icon,
     windows_creation_flags,
 )
 
@@ -264,13 +266,19 @@ class RootBUApp(ctk.CTk):
         button.grid(row=0, column=column, padx=8, pady=12, sticky="ew")
         return button
 
-    def log(self, level: str, message: str) -> None:
-        self.after(0, self._append_log, level, message)
+    def log(self, level: str, message: str, *, decorate: bool = True) -> None:
+        self.after(0, self._append_log, level, message, decorate)
 
-    def _append_log(self, level: str, message: str) -> None:
+    def _append_log(self, level: str, message: str, decorate: bool = True) -> None:
+        lines = clean_command_output_lines(message)
+        if not lines:
+            return
+
+        icon = status_icon(level) if decorate else ""
+        suffix = f" {icon}" if icon else ""
         self.log_box.configure(state="normal")
-        for line in str(message).splitlines() or [""]:
-            self.log_box.insert(tk.END, f"[{level}] {line}\n")
+        for line in lines:
+            self.log_box.insert(tk.END, f"[{level}] {line}{suffix}\n")
         self.log_box.see(tk.END)
         self.log_box.configure(state="disabled")
 
@@ -585,7 +593,7 @@ class RootBUApp(ctk.CTk):
             for line in process.stdout:
                 clean = line.rstrip()
                 if clean:
-                    self.log(STATUS_INFO, clean)
+                    self.log(STATUS_INFO, clean, decorate=False)
 
         return process.wait()
 

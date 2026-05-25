@@ -218,6 +218,29 @@ def assert_prerequisite_dialog_ui() -> None:
     assert "messagebox.askyesno(\"Confirm prerequisite installation\"" not in source
 
 
+def assert_log_formatting() -> None:
+    assert logic.status_icon(logic.STATUS_OK) == "✅"
+    assert logic.status_icon(logic.STATUS_WARN) == "⚠️"
+    assert logic.status_icon(logic.STATUS_ERROR) == "❌"
+    assert logic.status_icon(logic.STATUS_INFO) == "ℹ️"
+
+    transaction = "\x1b[2KPreparing transaction: ...working...\rPreparing transaction: done\x1b[0m"
+    assert logic.clean_command_output_lines(transaction) == ["Preparing transaction: done"]
+
+    spinner = "Solving environment: \\"
+    assert logic.clean_command_output_lines(spinner) == []
+
+    backspace_spinner = "Executing transaction: -\b\\\b|\b done"
+    assert logic.clean_command_output_lines(backspace_spinner) == ["Executing transaction: done"]
+
+    cursor_sequence = "\x1b[?25lVerifying transaction: done\x1b[?25h"
+    assert logic.clean_command_output_lines(cursor_sequence) == ["Verifying transaction: done"]
+
+    source = (PROJECT_ROOT / "root_installer.py").read_text(encoding="utf-8")
+    assert "status_icon(level)" in source
+    assert "decorate=False" in source
+
+
 def main() -> None:
     parse_python_files()
     assert_safe_environment_name()
@@ -226,6 +249,7 @@ def main() -> None:
     assert_setup_guidance()
     assert_prerequisite_plans()
     assert_prerequisite_dialog_ui()
+    assert_log_formatting()
     print("ROOTBU validation passed.")
 
 

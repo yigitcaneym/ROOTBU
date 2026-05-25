@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -20,6 +21,28 @@ STATUS_OK = "OK"
 STATUS_INFO = "INFO"
 STATUS_WARN = "WARN"
 STATUS_ERROR = "ERROR"
+STATUS_ICONS = {
+    STATUS_OK: "✅",
+    STATUS_WARN: "⚠️",
+    STATUS_ERROR: "❌",
+    STATUS_INFO: "ℹ️",
+}
+
+ANSI_ESCAPE_RE = re.compile(
+    r"(?:"
+    r"\x1B\[[0-?]*[ -/]*[@-~]"
+    r"|\x1B\][^\x07]*(?:\x07|\x1B\\)"
+    r"|\x1B[@-_]"
+    r")"
+)
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+CONDENSED_SPACE_RE = re.compile(r" {2,}")
+SPINNER_ONLY = {"-", "\\", "|", "/", ".", "..", "..."}
+CONDENSED_PROGRESS_PREFIXES = (
+    "collecting package metadata",
+    "solving environment",
+    "downloading and extracting packages",
+)
 
 Command = list[str]
 
@@ -144,6 +167,49 @@ def run_probe(command: Command, timeout: int = 12) -> ProbeResult:
 
 def command_to_text(command: Iterable[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
+
+
+def status_icon(level: str) -> str:
+    return STATUS_ICONS.get(level, "")
+
+
+def apply_backspaces(text: str) -> str:
+    cleaned: list[str] = []
+    for char in text:
+        if char == "\b":
+            if cleaned:
+                cleaned.pop()
+            continue
+        cleaned.append(char)
+    return "".join(cleaned)
+
+
+def is_spinner_artifact(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped in SPINNER_ONLY:
+        return True
+
+    lowered = stripped.lower()
+    if "done" in lowered or "error" in lowered or "warning" in lowered:
+        return False
+    return lowered.startswith(CONDENSED_PROGRESS_PREFIXES) and stripped[-1] in "-\\|/"
+
+
+def clean_command_output_lines(text: str) -> list[str]:
+    cleaned_text = ANSI_ESCAPE_RE.sub("", str(text))
+    cleaned_text = apply_backspaces(cleaned_text)
+    lines: list[str] = []
+
+    for raw_line in cleaned_text.split("\n"):
+        segments = raw_line.split("\r")
+        visible = next((segment for segment in reversed(segments) if segment.strip()), "")
+        visible = CONTROL_CHAR_RE.sub("", visible)
+        visible = CONDENSED_SPACE_RE.sub(" ", visible).strip()
+        if not visible or is_spinner_artifact(visible):
+            continue
+        lines.append(visible)
+
+    return lines
 
 
 def first_output_line(output: str) -> str:
