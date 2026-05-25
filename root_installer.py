@@ -430,10 +430,16 @@ class RootBUApp(ctk.CTk):
             self.log(STATUS_INFO, message)
 
         if not plan.can_open or plan.command is None:
+            if plan.manual_command:
+                self.log(STATUS_WARN, "ROOTBU could not find a terminal launcher for this platform.")
+                self.log(STATUS_INFO, f"Manual command: {plan.manual_command}")
+                return
             self.log(STATUS_ERROR, "ROOT is not available. Run Check System or Install ROOT first.")
             return
 
-        self.log(STATUS_INFO, f"$ {command_to_text(plan.command)}")
+        if plan.manual_command:
+            self.log(STATUS_INFO, f"Interactive ROOT command: {plan.manual_command}")
+        self.log(STATUS_INFO, f"Launcher command: {command_to_text(plan.command)}")
         try:
             subprocess.Popen(
                 plan.command,
@@ -444,7 +450,7 @@ class RootBUApp(ctk.CTk):
             self.log(STATUS_ERROR, f"Could not open ROOT: {exc}")
             return
 
-        self.log(STATUS_OK, "ROOT launch command started.")
+        self.log(STATUS_OK, "Interactive ROOT terminal launch command started.")
 
     def _log_report(self, report) -> None:
         self.log(STATUS_INFO, f"Detected OS: {report.platform_label}")

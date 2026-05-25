@@ -95,6 +95,8 @@ class OpenPlan:
     context: str
     messages: list[str]
     command: Command | None
+    manual_command: str = ""
+    opens_terminal: bool = False
 
     @property
     def can_open(self) -> bool:
@@ -458,28 +460,136 @@ def build_install_plan(report: SystemReport) -> InstallPlan:
     return InstallPlan(report.os_name, messages, [command])
 
 
-def build_open_plan(report: SystemReport) -> OpenPlan:
+def shell_quote_path(path: str) -> str:
+    if path.startswith("$HOME/"):
+        return path
+    return shlex.quote(path)
+
+
+def activation_script_from_conda_command(conda_command: Command | None) -> str:
+    if not conda_command:
+        return "$HOME/miniforge3/bin/activate"
+
+    raw_path = conda_command[0]
+    if raw_path == "conda" or raw_path == "conda.exe":
+        return "$HOME/miniforge3/bin/activate"
+
+    path = Path(raw_path).expanduser()
+    parent = path.parent
+    if parent.name == "condabin":
+        return str(parent.parent / "bin" / "activate")
+    if parent.name in {"bin", "Scripts"}:
+        return str(parent / "activate")
+
+    return "$HOME/miniforge3/bin/activate"
+
+
+def interactive_conda_root_command(conda_command: Command | None) -> str:
+    activate_script = activation_script_from_conda_command(conda_command)
+    return f"source {shell_quote_path(activate_script)} {shlex.quote(ENV_NAME)} && root"
+
+
+def interactive_wsl_conda_root_command() -> str:
+    env_name = shlex.quote(ENV_NAME)
+    return (
+        'if [ -f "$HOME/miniforge3/bin/activate" ]; then '
+        f'source "$HOME/miniforge3/bin/activate" {env_name}; '
+        'else CONDA_EXE="$(command -v conda)"; '
+        f'source "$(dirname "$CONDA_EXE")/activate" {env_name}; '
+        "fi; root"
+    )
+
+
+def applescript_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def macos_terminal_command(shell_command: str) -> Command:
+    return [
+        "osascript",
+        "-e",
+        f'tell application "Terminal" to do script "{applescript_escape(shell_command)}"',
+        "-e",
+        'tell application "Terminal" to activate',
+    ]
+
+
+LINUX_TERMINAL_CANDIDATES = ("gnome-terminal", "xterm", "konsole", "x-terminal-emulator")
+
+
+def find_linux_terminal(terminal_finder: Callable[[str], str | None] = shutil.which) -> str | None:
+    for terminal in LINUX_TERMINAL_CANDIDATES:
+        path = terminal_finder(terminal)
+        if path:
+            return path
+    return None
+
+
+def linux_terminal_command(terminal: str, shell_command: str) -> Command:
+    interactive_script = f"{shell_command}; exec bash"
+    name = Path(terminal).name
+    if name == "gnome-terminal":
+        return [terminal, "--", "bash", "-lc", interactive_script]
+    return [terminal, "-e", "bash", "-lc", interactive_script]
+
+
+def wsl_terminal_command(shell_command: str) -> Command:
+    interactive_script = f"{shell_command}; exec bash"
+    return ["cmd.exe", "/c", "start", "ROOTBU ROOT", "wsl.exe", "bash", "-lc", interactive_script]
+
+
+def build_open_plan(
+    report: SystemReport,
+    terminal_finder: Callable[[str], str | None] = shutil.which,
+) -> OpenPlan:
     messages: list[str] = []
     if report.os_name == "Windows":
         if report.wsl_root_in_env:
-            command = ["wsl", "bash", "-lc", f"conda run -n {ENV_NAME} root"]
-            messages.append(f"Opening ROOT from WSL environment {ENV_NAME}.")
-            return OpenPlan("Windows / WSL", messages, command)
+            shell_command = interactive_wsl_conda_root_command()
+            command = wsl_terminal_command(shell_command)
+            messages.append(f"Opening ROOT in a new interactive WSL terminal using {ENV_NAME}.")
+            return OpenPlan("Windows / WSL", messages, command, shell_command, True)
         if report.wsl_root_available:
-            command = ["wsl", "bash", "-lc", "root"]
-            messages.append("Opening the existing ROOT command inside WSL.")
-            return OpenPlan("Windows / WSL", messages, command)
+            shell_command = "root"
+            command = wsl_terminal_command(shell_command)
+            messages.append("Opening the existing ROOT command in a new interactive WSL terminal.")
+            return OpenPlan("Windows / WSL", messages, command, shell_command, True)
         messages.append("ROOT is not available in WSL yet.")
         return OpenPlan("Windows / WSL", messages, None)
 
     if report.native_root_in_env and report.native_conda:
-        command = report.native_conda + ["run", "-n", ENV_NAME, "root"]
-        messages.append(f"Opening ROOT from conda environment {ENV_NAME}.")
-        return OpenPlan(report.os_name, messages, command)
+        shell_command = interactive_conda_root_command(report.native_conda)
+        if report.os_name == "Darwin":
+            messages.append(f"Opening ROOT in Terminal.app using conda environment {ENV_NAME}.")
+            return OpenPlan("macOS", messages, macos_terminal_command(shell_command), shell_command, True)
+        if report.os_name == "Linux":
+            terminal = find_linux_terminal(terminal_finder)
+            if terminal:
+                messages.append(f"Opening ROOT in {Path(terminal).name} using conda environment {ENV_NAME}.")
+                return OpenPlan("Linux", messages, linux_terminal_command(terminal, shell_command), shell_command, True)
+            messages.append("No supported terminal emulator was found.")
+            messages.append("Run the manual command below in a terminal.")
+            return OpenPlan("Linux", messages, None, shell_command)
+
+        messages.append(f"Interactive ROOT launch is not supported on {report.os_name}.")
+        return OpenPlan(report.os_name, messages, None, shell_command)
 
     if report.native_root_available and report.native_root_command:
+        shell_command = "root"
+        if report.os_name == "Darwin":
+            messages.append("Opening the existing ROOT command in Terminal.app.")
+            return OpenPlan("macOS", messages, macos_terminal_command(shell_command), shell_command, True)
+        if report.os_name == "Linux":
+            terminal = find_linux_terminal(terminal_finder)
+            if terminal:
+                messages.append(f"Opening the existing ROOT command in {Path(terminal).name}.")
+                return OpenPlan("Linux", messages, linux_terminal_command(terminal, shell_command), shell_command, True)
+            messages.append("No supported terminal emulator was found.")
+            messages.append("Run this manual command in a terminal: root")
+            return OpenPlan("Linux", messages, None, shell_command)
+
         messages.append("Opening the existing ROOT command from PATH.")
-        return OpenPlan(report.os_name, messages, report.native_root_command)
+        return OpenPlan(report.os_name, messages, report.native_root_command, shell_command)
 
     messages.append("ROOT is not available yet.")
     return OpenPlan(report.os_name, messages, None)

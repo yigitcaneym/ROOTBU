@@ -241,6 +241,60 @@ def assert_log_formatting() -> None:
     assert "decorate=False" in source
 
 
+def assert_interactive_open_plans() -> None:
+    mac_report = logic.SystemReport(
+        os_name="Darwin",
+        platform_label="macOS-test",
+        native_conda=["/Users/example/miniforge3/bin/conda"],
+        native_root_in_env=True,
+    )
+    mac_plan = logic.build_open_plan(mac_report)
+    assert mac_plan.opens_terminal
+    assert mac_plan.command is not None
+    assert mac_plan.command[0] == "osascript"
+    assert "Terminal" in " ".join(mac_plan.command)
+    assert "source /Users/example/miniforge3/bin/activate rootbu_root_env && root" == mac_plan.manual_command
+    assert "conda run" not in " ".join(mac_plan.command)
+
+    linux_report = logic.SystemReport(
+        os_name="Linux",
+        platform_label="Linux-test",
+        native_conda=["/home/example/miniforge3/bin/conda"],
+        native_root_in_env=True,
+    )
+    linux_plan = logic.build_open_plan(
+        linux_report,
+        terminal_finder=lambda name: "/usr/bin/xterm" if name == "xterm" else None,
+    )
+    assert linux_plan.opens_terminal
+    assert linux_plan.command == [
+        "/usr/bin/xterm",
+        "-e",
+        "bash",
+        "-lc",
+        "source /home/example/miniforge3/bin/activate rootbu_root_env && root; exec bash",
+    ]
+
+    linux_manual_plan = logic.build_open_plan(linux_report, terminal_finder=lambda _name: None)
+    assert not linux_manual_plan.can_open
+    assert linux_manual_plan.manual_command == "source /home/example/miniforge3/bin/activate rootbu_root_env && root"
+    assert any("No supported terminal emulator" in message for message in linux_manual_plan.messages)
+
+    windows_report = logic.SystemReport(
+        os_name="Windows",
+        platform_label="Windows-test",
+        wsl_available=True,
+        wsl_conda_available=True,
+        wsl_root_in_env=True,
+    )
+    windows_plan = logic.build_open_plan(windows_report)
+    assert windows_plan.opens_terminal
+    assert windows_plan.command is not None
+    assert windows_plan.command[:5] == ["cmd.exe", "/c", "start", "ROOTBU ROOT", "wsl.exe"]
+    assert "source \"$HOME/miniforge3/bin/activate\" rootbu_root_env" in windows_plan.manual_command
+    assert "conda run" not in " ".join(windows_plan.command)
+
+
 def main() -> None:
     parse_python_files()
     assert_safe_environment_name()
@@ -250,6 +304,7 @@ def main() -> None:
     assert_prerequisite_plans()
     assert_prerequisite_dialog_ui()
     assert_log_formatting()
+    assert_interactive_open_plans()
     print("ROOTBU validation passed.")
 
 
