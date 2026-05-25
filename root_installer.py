@@ -14,6 +14,7 @@ from rootbu_logic import (
     STATUS_WARN,
     build_install_plan,
     build_open_plan,
+    build_prerequisite_plan,
     build_setup_guidance,
     collect_system_report,
     command_to_text,
@@ -30,8 +31,8 @@ class RootBUApp(ctk.CTk):
         self.minsize(760, 520)
         self.is_busy = False
         self.task_buttons: list[ctk.CTkButton] = []
-        self.suggested_commands: list[str] = []
-        self.copy_button: ctk.CTkButton | None = None
+        self.prerequisite_plan = None
+        self.prerequisite_button: ctk.CTkButton | None = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -64,7 +65,7 @@ class RootBUApp(ctk.CTk):
         self.check_button = self._add_task_button(actions, 0, "Check System", self.check_system)
         self.install_button = self._add_task_button(actions, 1, "Install ROOT", self.install_root)
         self.open_button = self._add_task_button(actions, 2, "Open ROOT", self.open_root)
-        self.copy_button = self._add_copy_button(actions, 3)
+        self.prerequisite_button = self._add_prerequisite_button(actions, 3)
 
         log_frame = ctk.CTkFrame(self)
         log_frame.grid(row=2, column=0, padx=24, pady=(0, 24), sticky="nsew")
@@ -88,7 +89,7 @@ class RootBUApp(ctk.CTk):
         self.log_box.configure(state="disabled")
 
         self.log(STATUS_INFO, "Ready. Run Check System before installing ROOT.")
-        self.update_copy_button_state()
+        self.update_prerequisite_button_state()
 
     def _add_task_button(self, parent: ctk.CTkFrame, column: int, text: str, command) -> ctk.CTkButton:
         button = ctk.CTkButton(
@@ -102,13 +103,13 @@ class RootBUApp(ctk.CTk):
         self.task_buttons.append(button)
         return button
 
-    def _add_copy_button(self, parent: ctk.CTkFrame, column: int) -> ctk.CTkButton:
+    def _add_prerequisite_button(self, parent: ctk.CTkFrame, column: int) -> ctk.CTkButton:
         button = ctk.CTkButton(
             parent,
-            text="Copy Suggested Commands",
+            text="Install Missing Prerequisites",
             height=44,
             font=ctk.CTkFont(size=14, weight="bold"),
-            command=self.copy_suggested_commands,
+            command=self.install_prerequisites,
         )
         button.grid(row=0, column=column, padx=8, pady=12, sticky="ew")
         return button
@@ -128,26 +129,27 @@ class RootBUApp(ctk.CTk):
         state = "disabled" if busy else "normal"
         for button in self.task_buttons:
             button.configure(state=state)
-        self.update_copy_button_state()
+        self.update_prerequisite_button_state()
 
-    def update_copy_button_state(self) -> None:
-        if not self.copy_button:
+    def update_prerequisite_button_state(self) -> None:
+        if not self.prerequisite_button:
             return
-        state = "normal" if self.suggested_commands and not self.is_busy else "disabled"
-        self.copy_button.configure(state=state)
-
-    def set_suggested_commands(self, commands: list[str]) -> None:
-        self.suggested_commands = commands
-        self.update_copy_button_state()
-
-    def copy_suggested_commands(self) -> None:
-        if not self.suggested_commands:
-            self.log(STATUS_WARN, "No suggested commands are available to copy yet.")
+        if self.is_busy:
+            self.prerequisite_button.configure(state="disabled")
             return
 
-        self.clipboard_clear()
-        self.clipboard_append("\n".join(self.suggested_commands))
-        self.log(STATUS_OK, "Suggested command(s) copied to the clipboard.")
+        if self.prerequisite_plan is None:
+            self.prerequisite_button.configure(text="Install Missing Prerequisites", state="disabled")
+            return
+
+        if self.prerequisite_plan.needed:
+            self.prerequisite_button.configure(text="Install Missing Prerequisites", state="normal")
+        else:
+            self.prerequisite_button.configure(text="No Prerequisites Needed", state="disabled")
+
+    def set_prerequisite_plan(self, plan) -> None:
+        self.prerequisite_plan = plan
+        self.update_prerequisite_button_state()
 
     def run_task(self, name: str, target) -> None:
         if self.is_busy:
@@ -177,11 +179,59 @@ class RootBUApp(ctk.CTk):
     def open_root(self) -> None:
         self.run_task("Open ROOT", self._open_root_task)
 
+    def install_prerequisites(self) -> None:
+        self.run_task("Install Missing Prerequisites", self._install_prerequisites_task)
+
     def _check_system_task(self):
         report = collect_system_report()
         self._log_report(report)
         guidance = build_setup_guidance(report)
         self._log_guidance(guidance)
+        prerequisite_plan = build_prerequisite_plan(report)
+        self.after(0, self.set_prerequisite_plan, prerequisite_plan)
+
+    def _install_prerequisites_task(self):
+        report = collect_system_report()
+        self._log_report(report)
+        guidance = build_setup_guidance(report)
+        self._log_guidance(guidance)
+        plan = build_prerequisite_plan(report)
+        self.after(0, self.set_prerequisite_plan, plan)
+        self._log_prerequisite_plan(plan)
+
+        if not plan.needed:
+            self.log(STATUS_OK, "No missing prerequisites were detected.")
+            return
+
+        if not plan.can_run:
+            message = self._prerequisite_confirmation_text(plan, manual=True)
+            if plan.has_manual_commands:
+                copy_commands = self.ask_yes_no(plan.title, message + "\n\nCopy the manual command(s) to the clipboard?")
+                if copy_commands:
+                    self.copy_text_to_clipboard("\n".join(plan.manual_commands))
+                    self.log(STATUS_OK, "Manual prerequisite command(s) copied to the clipboard.")
+            else:
+                self.show_info(plan.title, message)
+            return
+
+        confirmed = self.ask_yes_no(
+            "Confirm prerequisite installation",
+            self._prerequisite_confirmation_text(plan),
+        )
+        if not confirmed:
+            self.log(STATUS_WARN, "Prerequisite installation cancelled before running commands.")
+            return
+
+        for step in plan.steps:
+            self.log(STATUS_INFO, step.label)
+            exit_code = self.stream_command(step.command)
+            if exit_code != 0:
+                self.log(STATUS_ERROR, f"Command exited with code {exit_code}.")
+                return
+
+        self.log(STATUS_OK, "Finished prerequisite installation.")
+        self.log(STATUS_INFO, "Please run Check System again.")
+        self.after(0, self.set_prerequisite_plan, None)
 
     def _install_root_task(self):
         report = collect_system_report()
@@ -247,7 +297,6 @@ class RootBUApp(ctk.CTk):
             self.log(item.status, f"{item.name}: {item.detail}")
 
     def _log_guidance(self, guidance) -> None:
-        self.after(0, self.set_suggested_commands, guidance.commands)
         self.log(STATUS_INFO, guidance.title)
         for message in guidance.messages:
             self.log(STATUS_INFO, message)
@@ -255,6 +304,53 @@ class RootBUApp(ctk.CTk):
             self.log(STATUS_INFO, "Suggested command(s):")
             for command in guidance.commands:
                 self.log(STATUS_INFO, f"$ {command}")
+
+    def _log_prerequisite_plan(self, plan) -> None:
+        self.log(STATUS_INFO, plan.title)
+        for message in plan.messages:
+            self.log(STATUS_INFO, message)
+        if plan.manual_commands and not plan.can_run:
+            self.log(STATUS_INFO, "Manual command(s):")
+            for command in plan.manual_commands:
+                self.log(STATUS_INFO, f"$ {command}")
+        if plan.can_run:
+            self.log(STATUS_INFO, "Prerequisite command(s) ROOTBU will run after confirmation:")
+            for step in plan.steps:
+                self.log(STATUS_INFO, f"{step.label} {command_to_text(step.command)}")
+
+    def _prerequisite_confirmation_text(self, plan, manual: bool = False) -> str:
+        lines = [
+            f"Prerequisite: {plan.install_name or plan.title}",
+            f"Where: {plan.install_location or plan.context}",
+        ]
+        if plan.download_url:
+            lines.append(f"Download: {plan.download_url}")
+        lines.extend(
+            [
+                "",
+                "Safety:",
+                "- ROOTBU will not use sudo.",
+                "- ROOTBU will not remove anything.",
+                "- ROOTBU will not overwrite an existing conda installation.",
+                "- ROOTBU will not install ROOT in this step.",
+                "- ROOTBU will not run conda init automatically.",
+            ]
+        )
+        if manual:
+            lines.append("")
+            lines.append("ROOTBU will not run this system-level prerequisite automatically.")
+            if plan.manual_commands:
+                lines.append("Manual command(s):")
+                lines.extend(f"$ {command}" for command in plan.manual_commands)
+            return "\n".join(lines)
+
+        lines.append("")
+        lines.append("ROOTBU will run these command(s):")
+        for step in plan.steps:
+            lines.append(f"$ {command_to_text(step.command)}")
+        lines.append("")
+        lines.append("Continue?")
+        return "\n".join(lines)
 
     def ask_yes_no(self, title: str, message: str) -> bool:
         done = threading.Event()
@@ -267,6 +363,27 @@ class RootBUApp(ctk.CTk):
         self.after(0, ask)
         done.wait()
         return answer["value"]
+
+    def show_info(self, title: str, message: str) -> None:
+        done = threading.Event()
+
+        def show() -> None:
+            messagebox.showinfo(title, message, parent=self)
+            done.set()
+
+        self.after(0, show)
+        done.wait()
+
+    def copy_text_to_clipboard(self, text: str) -> None:
+        done = threading.Event()
+
+        def copy() -> None:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            done.set()
+
+        self.after(0, copy)
+        done.wait()
 
     def stream_command(self, command: list[str]) -> int:
         self.log(STATUS_INFO, f"Running: {command_to_text(command)}")

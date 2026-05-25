@@ -122,12 +122,99 @@ def assert_setup_guidance() -> None:
     assert any("Open ROOT" in message for message in wsl_root_available_guidance.messages)
 
 
+def command_texts(plan: logic.PrerequisitePlan) -> list[str]:
+    return [logic.command_to_text(step.command) for step in plan.steps]
+
+
+def assert_no_destructive_prerequisite_commands(plan: logic.PrerequisitePlan) -> None:
+    for text in command_texts(plan):
+        assert "sudo" not in text
+        assert " rm " not in text
+        assert "rm -rf" not in text
+        assert "conda init" not in text
+
+
+def assert_prerequisite_plans() -> None:
+    no_prereq_report = logic.SystemReport(
+        os_name="Darwin",
+        platform_label="macOS-test",
+        native_conda=["conda"],
+    )
+    no_prereq_plan = logic.build_prerequisite_plan(no_prereq_report)
+    assert not no_prereq_plan.needed
+    assert not no_prereq_plan.can_run
+
+    mac_arm_report = logic.SystemReport(os_name="Darwin", platform_label="macOS-test")
+    mac_arm_plan = logic.build_prerequisite_plan(
+        mac_arm_report,
+        machine="arm64",
+        native_miniforge_exists=False,
+    )
+    mac_arm_text = "\n".join(command_texts(mac_arm_plan))
+    assert mac_arm_plan.needed
+    assert mac_arm_plan.can_run
+    assert mac_arm_plan.install_location == logic.MINIFORGE_INSTALL_DIR
+    assert "Miniforge3-MacOSX-arm64.sh" in mac_arm_text
+    assert 'bash "$HOME/.rootbu/Miniforge3-MacOSX-arm64.sh" -b -p "$TARGET"' in mac_arm_text
+    assert_no_destructive_prerequisite_commands(mac_arm_plan)
+
+    mac_intel_plan = logic.build_prerequisite_plan(
+        mac_arm_report,
+        machine="x86_64",
+        native_miniforge_exists=False,
+    )
+    assert "Miniforge3-MacOSX-x86_64.sh" in "\n".join(command_texts(mac_intel_plan))
+    assert_no_destructive_prerequisite_commands(mac_intel_plan)
+
+    existing_path_plan = logic.build_prerequisite_plan(
+        mac_arm_report,
+        machine="arm64",
+        native_miniforge_exists=True,
+    )
+    assert existing_path_plan.needed
+    assert not existing_path_plan.can_run
+    assert any("will not overwrite" in message for message in existing_path_plan.messages)
+
+    linux_report = logic.SystemReport(os_name="Linux", platform_label="Linux-test")
+    linux_plan = logic.build_prerequisite_plan(
+        linux_report,
+        native_miniforge_exists=False,
+    )
+    linux_text = "\n".join(command_texts(linux_plan))
+    assert linux_plan.needed
+    assert linux_plan.can_run
+    assert "Miniforge3-Linux-x86_64.sh" in linux_text
+    assert 'bash "$HOME/.rootbu/Miniforge3-Linux-x86_64.sh" -b -p "$TARGET"' in linux_text
+    assert_no_destructive_prerequisite_commands(linux_plan)
+
+    windows_without_wsl = logic.SystemReport(os_name="Windows", platform_label="Windows-test")
+    windows_plan = logic.build_prerequisite_plan(windows_without_wsl)
+    assert windows_plan.needed
+    assert not windows_plan.can_run
+    assert windows_plan.manual_commands == ["wsl --install"]
+
+    windows_without_wsl_conda = logic.SystemReport(
+        os_name="Windows",
+        platform_label="Windows-test",
+        wsl_available=True,
+        wsl_conda_available=False,
+    )
+    wsl_plan = logic.build_prerequisite_plan(windows_without_wsl_conda)
+    wsl_text = "\n".join(command_texts(wsl_plan))
+    assert wsl_plan.needed
+    assert wsl_plan.can_run
+    assert "wsl bash -lc" in wsl_text
+    assert "Miniforge3-Linux-x86_64.sh" in wsl_text
+    assert_no_destructive_prerequisite_commands(wsl_plan)
+
+
 def main() -> None:
     parse_python_files()
     assert_safe_environment_name()
     assert_conda_env_parser()
     assert_install_plans()
     assert_setup_guidance()
+    assert_prerequisite_plans()
     print("ROOTBU validation passed.")
 
 

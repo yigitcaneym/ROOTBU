@@ -11,6 +11,10 @@ from typing import Callable, Iterable
 ENV_NAME = "rootbu_root_env"
 CONDA_CHANNEL = "conda-forge"
 ROOT_PACKAGE = "root"
+MINIFORGE_INSTALL_DIR = "~/miniforge3"
+MINIFORGE_DOWNLOAD_DIR = "~/.rootbu"
+MINIFORGE_LINUX_INSTALLER = "Miniforge3-Linux-x86_64.sh"
+MINIFORGE_RELEASE_BASE = "https://github.com/conda-forge/miniforge/releases/latest/download"
 
 STATUS_OK = "OK"
 STATUS_INFO = "INFO"
@@ -72,6 +76,33 @@ class OpenPlan:
     @property
     def can_open(self) -> bool:
         return self.command is not None
+
+
+@dataclass
+class CommandStep:
+    label: str
+    command: Command
+
+
+@dataclass
+class PrerequisitePlan:
+    context: str
+    title: str
+    needed: bool
+    messages: list[str]
+    install_name: str = ""
+    install_location: str = ""
+    download_url: str = ""
+    steps: list[CommandStep] = field(default_factory=list)
+    manual_commands: list[str] = field(default_factory=list)
+
+    @property
+    def can_run(self) -> bool:
+        return bool(self.steps)
+
+    @property
+    def has_manual_commands(self) -> bool:
+        return bool(self.manual_commands)
 
 
 @dataclass
@@ -388,31 +419,178 @@ def build_open_plan(report: SystemReport) -> OpenPlan:
     return OpenPlan(report.os_name, messages, None)
 
 
-def macos_miniforge_commands(machine: str | None = None) -> list[str]:
+def miniforge_installer_name(os_name: str, machine: str | None = None) -> str:
     arch = machine or platform.machine()
-    if arch == "arm64":
-        installer = "Miniforge3-MacOSX-arm64.sh"
-    else:
-        installer = "Miniforge3-MacOSX-x86_64.sh"
+    if os_name == "Darwin":
+        if arch == "arm64":
+            return "Miniforge3-MacOSX-arm64.sh"
+        return "Miniforge3-MacOSX-x86_64.sh"
+    return MINIFORGE_LINUX_INSTALLER
+
+
+def miniforge_url(os_name: str, machine: str | None = None) -> str:
+    return f"{MINIFORGE_RELEASE_BASE}/{miniforge_installer_name(os_name, machine)}"
+
+
+def macos_miniforge_commands(machine: str | None = None) -> list[str]:
+    installer = miniforge_installer_name("Darwin", machine)
     return [
-        f'curl -fsSLo Miniforge3.sh "https://github.com/conda-forge/miniforge/releases/latest/download/{installer}"',
+        f'curl -fsSLo Miniforge3.sh "{miniforge_url("Darwin", machine)}"',
         "bash Miniforge3.sh",
     ]
 
 
 def linux_miniforge_commands() -> list[str]:
-    installer = "Miniforge3-Linux-x86_64.sh"
+    installer = MINIFORGE_LINUX_INSTALLER
     return [
-        f'curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/{installer}"',
+        f'curl -L -O "{miniforge_url("Linux")}"',
         f"bash {installer}",
     ]
+
+
+def shell_command(script: str) -> Command:
+    return ["bash", "-lc", script]
+
+
+def wsl_shell_command(script: str) -> Command:
+    return ["wsl", "bash", "-lc", script]
+
+
+def miniforge_download_script(url: str, installer_name: str) -> str:
+    return (
+        'set -e; '
+        'TARGET="$HOME/miniforge3"; '
+        'if [ -e "$TARGET" ]; then echo "Install target already exists: $TARGET"; exit 10; fi; '
+        'mkdir -p "$HOME/.rootbu"; '
+        'echo "Downloading Miniforge..."; '
+        f'curl -fsSLo "$HOME/.rootbu/{installer_name}" "{url}"'
+    )
+
+
+def miniforge_install_script(installer_name: str) -> str:
+    return (
+        'set -e; '
+        'TARGET="$HOME/miniforge3"; '
+        'if [ -e "$TARGET" ]; then echo "Install target already exists: $TARGET"; exit 10; fi; '
+        'echo "Installing Miniforge..."; '
+        f'bash "$HOME/.rootbu/{installer_name}" -b -p "$TARGET"'
+    )
+
+
+def build_miniforge_steps(os_name: str, machine: str | None = None, *, inside_wsl: bool = False) -> list[CommandStep]:
+    installer_name = miniforge_installer_name("Linux" if inside_wsl else os_name, machine)
+    url = miniforge_url("Linux" if inside_wsl else os_name, machine)
+    command_builder = wsl_shell_command if inside_wsl else shell_command
+    return [
+        CommandStep("Downloading Miniforge...", command_builder(miniforge_download_script(url, installer_name))),
+        CommandStep("Installing Miniforge...", command_builder(miniforge_install_script(installer_name))),
+    ]
+
+
+def build_prerequisite_plan(
+    report: SystemReport,
+    *,
+    machine: str | None = None,
+    native_miniforge_exists: bool | None = None,
+) -> PrerequisitePlan:
+    if report.os_name == "Windows":
+        if not report.wsl_available:
+            return PrerequisitePlan(
+                context="Windows / WSL",
+                title="WSL setup is required",
+                needed=True,
+                install_name="WSL",
+                install_location="Windows system feature",
+                messages=[
+                    "ROOTBU expects WSL for the ROOT setup flow on Windows.",
+                    "WSL installation may require Administrator PowerShell and a Windows restart.",
+                    "ROOTBU will not run wsl --install automatically because it is a system-level Windows change.",
+                    "Copy this command into Administrator PowerShell if you want to install WSL manually.",
+                ],
+                manual_commands=["wsl --install"],
+            )
+
+        if not report.wsl_conda_available:
+            return PrerequisitePlan(
+                context="Windows / WSL",
+                title="Install Miniforge inside WSL",
+                needed=True,
+                install_name="Miniforge",
+                install_location="~/miniforge3 inside the default WSL distribution",
+                download_url=miniforge_url("Linux"),
+                messages=[
+                    "ROOTBU can install Miniforge inside WSL after confirmation.",
+                    "The installer target is ~/miniforge3 inside WSL.",
+                    "ROOTBU will stop if ~/miniforge3 already exists.",
+                    "ROOTBU will not use sudo, remove anything, or install ROOT in this step.",
+                ],
+                steps=build_miniforge_steps("Linux", inside_wsl=True),
+                manual_commands=linux_miniforge_commands(),
+            )
+
+        return PrerequisitePlan(
+            context="Windows / WSL",
+            title="No prerequisites needed",
+            needed=False,
+            messages=["WSL and conda are available. Use Install ROOT when you are ready."],
+        )
+
+    if report.os_name not in {"Darwin", "Linux"}:
+        return PrerequisitePlan(
+            context=report.os_name,
+            title="Unsupported platform",
+            needed=False,
+            messages=[f"Prerequisite installation is not available for {report.os_name}."],
+        )
+
+    if report.native_conda:
+        return PrerequisitePlan(
+            context=report.os_name,
+            title="No prerequisites needed",
+            needed=False,
+            messages=["Conda is available. Use Install ROOT when you are ready."],
+        )
+
+    target_exists = Path.home().joinpath("miniforge3").exists() if native_miniforge_exists is None else native_miniforge_exists
+    if target_exists:
+        return PrerequisitePlan(
+            context=report.os_name,
+            title="Miniforge path already exists",
+            needed=True,
+            install_name="Miniforge",
+            install_location=MINIFORGE_INSTALL_DIR,
+            messages=[
+                "Conda was not found, but ~/miniforge3 already exists.",
+                "ROOTBU will not overwrite that folder.",
+                "Open a terminal and check whether ~/miniforge3/bin/conda works, or choose a manual repair path.",
+                "After fixing conda, restart ROOTBU and run Check System again.",
+            ],
+        )
+
+    return PrerequisitePlan(
+        context="macOS" if report.os_name == "Darwin" else "Linux",
+        title="Install Miniforge",
+        needed=True,
+        install_name="Miniforge",
+        install_location=MINIFORGE_INSTALL_DIR,
+        download_url=miniforge_url(report.os_name, machine),
+        messages=[
+            "Conda was not found. ROOTBU can install Miniforge after confirmation.",
+            "Miniforge is recommended because it is focused on conda-forge packages.",
+            "The installer target is ~/miniforge3.",
+            "ROOTBU will stop if ~/miniforge3 already exists.",
+            "ROOTBU will not use sudo, remove anything, run conda init, or install ROOT in this step.",
+        ],
+        steps=build_miniforge_steps(report.os_name, machine),
+        manual_commands=macos_miniforge_commands(machine) if report.os_name == "Darwin" else linux_miniforge_commands(),
+    )
 
 
 def conda_restart_messages(scope: str = "terminal") -> list[str]:
     return [
         f"After the installer finishes, close and reopen your {scope}.",
         "If conda is still not found, run conda init in that terminal, close it, reopen it, then run ROOTBU Check System again.",
-        "ROOTBU only shows these commands. It does not download or run the Miniforge installer for you.",
+        "ROOTBU will not run conda init automatically.",
     ]
 
 
@@ -420,16 +598,18 @@ def native_conda_missing_guidance(report: SystemReport) -> SetupGuidance:
     if report.os_name == "Darwin":
         messages = [
             "Conda was not found. ROOTBU cannot install ROOT yet.",
-            "Recommended: install Miniforge manually because it is focused on conda-forge packages.",
-            "Open Terminal and run these commands:",
+            "Recommended: install Miniforge because it is focused on conda-forge packages.",
+            "Use Install Missing Prerequisites to let ROOTBU download and install Miniforge after confirmation.",
+            "Or open Terminal and run these commands manually:",
         ] + conda_restart_messages("terminal")
         return SetupGuidance("Next Steps", messages, macos_miniforge_commands())
 
     if report.os_name == "Linux":
         messages = [
             "Conda was not found. ROOTBU cannot install ROOT yet.",
-            "Recommended: install Miniforge manually because it is focused on conda-forge packages.",
-            "Open a terminal and run these commands:",
+            "Recommended: install Miniforge because it is focused on conda-forge packages.",
+            "Use Install Missing Prerequisites to let ROOTBU download and install Miniforge after confirmation.",
+            "Or open a terminal and run these commands manually:",
         ] + conda_restart_messages("terminal")
         return SetupGuidance("Next Steps", messages, linux_miniforge_commands())
 
@@ -453,9 +633,9 @@ def build_setup_guidance(report: SystemReport) -> SetupGuidance:
         if not report.wsl_conda_available:
             messages = [
                 "WSL is available, but conda was not found inside WSL.",
-                "Open your Ubuntu/WSL terminal and install Miniforge manually.",
+                "Use Install Missing Prerequisites to let ROOTBU install Miniforge inside WSL after confirmation.",
                 "Recommended: Miniforge is focused on conda-forge packages.",
-                "Run these commands inside WSL:",
+                "Or run these commands manually inside WSL:",
             ] + conda_restart_messages("WSL terminal")
             return SetupGuidance("Next Steps", messages, linux_miniforge_commands())
 
