@@ -602,6 +602,9 @@ def assert_distributable_build_files() -> None:
     assert "ROOTBU-macos.zip" in readme
     assert "SmartScreen" in readme
     assert "Gatekeeper" in readme
+    assert "Apple could not verify ROOTBU is free of malware" in readme
+    assert "xattr -dr com.apple.quarantine /path/to/ROOTBU.app" in readme
+    assert "Control-click or right-click `ROOTBU.app`" in readme
     assert "does not bundle CERN ROOT, Miniforge, conda, WSL, Ubuntu, or any external installer" in readme
     assert "Build Distributables" in readme
     assert "PR into `main` builds test artifacts without creating a GitHub Release" in readme
@@ -614,6 +617,9 @@ def assert_distributable_build_files() -> None:
     assert "does not create or update a GitHub Release" in release
     assert "v0.1.0" in release
     assert "unsigned" in release
+    assert "Opening Unsigned macOS Builds" in release
+    assert "Apple could not verify ROOTBU is free of malware" in release
+    assert "xattr -dr com.apple.quarantine /path/to/ROOTBU.app" in release
 
 
 def main() -> None:

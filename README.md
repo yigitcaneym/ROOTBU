@@ -21,6 +21,26 @@ Normal users can download ROOTBU from the GitHub Releases page once release asse
 
 The Windows `.exe` may show Microsoft Defender SmartScreen warnings because ROOTBU is unsigned. The macOS app may show Gatekeeper warnings because ROOTBU is unsigned and not notarized.
 
+### macOS unsigned build note
+
+`ROOTBU.app` is currently unsigned and not notarized. macOS may show: "Apple could not verify ROOTBU is free of malware."
+
+For artifacts downloaded from this repository's own GitHub Actions or Releases, users can open it with either option below.
+
+Option A - Finder:
+
+- Unzip `ROOTBU-macos.zip`.
+- Control-click or right-click `ROOTBU.app`.
+- Choose **Open**.
+- Click **Open** again if macOS asks.
+
+Option B - Terminal:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/ROOTBU.app
+open /path/to/ROOTBU.app
+```
+
 ROOTBU does not bundle CERN ROOT, Miniforge, conda, WSL, Ubuntu, or any external installer. It bundles only the ROOTBU Python app and UI dependencies. ROOTBU still asks before installing prerequisites.
 
 ## Run from Source

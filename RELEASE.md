@@ -33,5 +33,23 @@ python -m py_compile main.py installer.py root_installer.py rootbu_logic.py vali
 ## Known Warnings
 
 - Windows builds are unsigned and may show Microsoft Defender SmartScreen warnings.
-- macOS builds are unsigned and not notarized, so Gatekeeper may warn before opening.
+- macOS builds are unsigned and not notarized, so Gatekeeper may warn that "Apple could not verify ROOTBU is free of malware."
 - ROOTBU still asks before installing prerequisites and does not install ROOT automatically.
+
+## Opening Unsigned macOS Builds
+
+For `ROOTBU-macos.zip` artifacts downloaded from this repository's own GitHub Actions or Releases:
+
+Option A - Finder:
+
+- Unzip `ROOTBU-macos.zip`.
+- Control-click or right-click `ROOTBU.app`.
+- Choose **Open**.
+- Click **Open** again if macOS asks.
+
+Option B - Terminal:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/ROOTBU.app
+open /path/to/ROOTBU.app
+```
