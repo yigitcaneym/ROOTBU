@@ -41,6 +41,7 @@ If prerequisites are missing, ROOTBU prints a **Next Steps** section and enables
 Distributable builds are made with PyInstaller through GitHub Actions.
 
 - Manual build: run the **Build Distributables** workflow from the GitHub Actions tab.
+- Pull request build: opening or updating a PR into `main` builds test artifacts without creating a GitHub Release.
 - Release build: push a tag such as `v0.1.0`; the workflow builds Windows and macOS artifacts and attaches them to a GitHub Release.
 - Artifacts:
   - `ROOTBU-windows` contains `ROOTBU-windows.exe`.

@@ -580,6 +580,8 @@ def assert_distributable_build_files() -> None:
     assert "pyinstaller" in build_requirements.lower()
 
     assert "workflow_dispatch" in workflow
+    assert "pull_request" in workflow
+    assert 'branches: ["main"]' in workflow
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
     assert "pyinstaller --noconfirm --clean --windowed" in workflow
@@ -592,6 +594,7 @@ def assert_distributable_build_files() -> None:
     assert "actions/download-artifact@v4" in workflow
     assert "gh release create" in workflow
     assert "gh release upload" in workflow
+    assert "if: startsWith(github.ref, 'refs/tags/v')" in workflow
     assert "refs/tags/v" in workflow
 
     assert "## Download ROOTBU" in readme
@@ -601,11 +604,14 @@ def assert_distributable_build_files() -> None:
     assert "Gatekeeper" in readme
     assert "does not bundle CERN ROOT, Miniforge, conda, WSL, Ubuntu, or any external installer" in readme
     assert "Build Distributables" in readme
+    assert "PR into `main` builds test artifacts without creating a GitHub Release" in readme
     assert "RELEASE.md" in readme
 
     assert "ROOTBU Release Checklist" in release
     assert "Build Distributables" in release
     assert "workflow_dispatch" in release
+    assert "PR into `main` for test artifacts" in release
+    assert "does not create or update a GitHub Release" in release
     assert "v0.1.0" in release
     assert "unsigned" in release
 
