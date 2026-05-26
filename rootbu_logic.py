@@ -52,6 +52,11 @@ WSL_VIRTUALIZATION_ERROR_PATTERNS = (
     "virtualization is turned on",
     "createvm",
 )
+WSL_MINIFORGE_DIRECTORY_ERROR_PATTERNS = (
+    "could not create directory: ''",
+    "mkdir: cannot create directory ''",
+    "check permissions and available disk space",
+)
 
 Command = list[str]
 
@@ -284,6 +289,20 @@ def wsl_virtualization_error_guidance() -> list[str]:
         "On a physical Windows PC: enable virtualization in BIOS/UEFI and make sure Windows Virtual Machine Platform is enabled.",
         "In a virtual machine such as UTM/Parallels/VMware: WSL2 may require nested virtualization, and it may not be supported or enabled.",
         "Try the same ROOTBU flow on a physical Windows machine if WSL2 cannot start inside the VM.",
+    ]
+
+
+def has_wsl_miniforge_directory_error(output: str) -> bool:
+    lowered = output.lower()
+    return any(pattern in lowered for pattern in WSL_MINIFORGE_DIRECTORY_ERROR_PATTERNS)
+
+
+def wsl_miniforge_directory_error_guidance() -> list[str]:
+    return [
+        "Miniforge could not determine a valid install directory inside WSL.",
+        "Open Ubuntu once, finish its first-run username/password setup, then rerun Check System.",
+        "Also check available disk space inside WSL.",
+        "ROOTBU does not use sudo and will not overwrite an existing ~/miniforge3 directory.",
     ]
 
 
@@ -894,10 +913,84 @@ def miniforge_install_script(installer_name: str) -> str:
     )
 
 
+def wsl_miniforge_environment_script(installer_name: str = MINIFORGE_LINUX_INSTALLER) -> str:
+    return (
+        'USER_NAME="$(id -un 2>/dev/null || whoami 2>/dev/null || true)"; '
+        'if [ -z "$USER_NAME" ]; then echo "ERROR: Could not determine WSL user. Open Ubuntu once and finish first-run setup."; exit 20; fi; '
+        'HOME_DIR="${HOME:-$(getent passwd "$USER_NAME" 2>/dev/null | cut -d: -f6)}"; '
+        'TARGET="${HOME_DIR}/miniforge3"; '
+        'DOWNLOAD_DIR="${HOME_DIR}/.rootbu"; '
+        f'INSTALLER="${{DOWNLOAD_DIR}}/{installer_name}"; '
+        'test -n "$HOME_DIR" || { echo "ERROR: WSL HOME is empty. Open Ubuntu once and finish first-run setup."; exit 21; }; '
+        'test -n "$TARGET" || { echo "ERROR: Miniforge target is empty inside WSL."; exit 22; }; '
+        'if [ "$TARGET" = "/miniforge3" ]; then echo "ERROR: Miniforge target is empty inside WSL."; exit 22; fi; '
+        'echo "WSL user: $USER_NAME"; '
+        'echo "WSL HOME: $HOME_DIR"; '
+        'echo "Miniforge target: $TARGET"; '
+    )
+
+
+def wsl_miniforge_preflight_checks() -> str:
+    return (
+        'if ! command -v curl >/dev/null 2>&1; then '
+        'echo "ERROR: curl is not available inside WSL. Open Ubuntu, install curl, then rerun Check System."; exit 23; '
+        'fi; '
+        'if [ -e "$TARGET" ]; then echo "Install target already exists: $TARGET"; exit 10; fi; '
+        'if command -v df >/dev/null 2>&1; then '
+        'AVAILABLE_KB="$(df -Pk "$HOME_DIR" 2>/dev/null | awk \'NR==2 {print $4}\')"; '
+        'case "$AVAILABLE_KB" in '
+        '""|*[!0-9]*) echo "WSL available disk (KB): unknown";; '
+        '*) echo "WSL available disk (KB): $AVAILABLE_KB"; '
+        'if [ "$AVAILABLE_KB" -lt 900000 ]; then echo "ERROR: Not enough disk space inside WSL for Miniforge. About 900 MB is recommended."; exit 24; fi;; '
+        'esac; '
+        'fi; '
+    )
+
+
+def wsl_miniforge_preflight_script(installer_name: str = MINIFORGE_LINUX_INSTALLER) -> str:
+    return (
+        'set -e; '
+        + wsl_miniforge_environment_script(installer_name)
+        + wsl_miniforge_preflight_checks()
+        + 'echo "WSL Miniforge preflight check passed."'
+    )
+
+
+def wsl_miniforge_download_script(url: str, installer_name: str) -> str:
+    return (
+        'set -e; '
+        + wsl_miniforge_environment_script(installer_name)
+        + wsl_miniforge_preflight_checks()
+        + 'mkdir -p "$DOWNLOAD_DIR"; '
+        + 'echo "Downloading Miniforge..."; '
+        + f'curl -fsSLo "$INSTALLER" "{url}"; '
+        + 'if [ ! -s "$INSTALLER" ]; then echo "ERROR: Miniforge installer download is missing or empty: $INSTALLER"; exit 25; fi; '
+        + 'echo "Miniforge installer downloaded: $INSTALLER"'
+    )
+
+
+def wsl_miniforge_install_script(installer_name: str) -> str:
+    return (
+        'set -e; '
+        + wsl_miniforge_environment_script(installer_name)
+        + wsl_miniforge_preflight_checks()
+        + 'if [ ! -s "$INSTALLER" ]; then echo "ERROR: Miniforge installer was not found or is empty: $INSTALLER"; exit 25; fi; '
+        + 'echo "Installing Miniforge..."; '
+        + 'bash "$INSTALLER" -b -p "$TARGET"'
+    )
+
+
 def build_miniforge_steps(os_name: str, machine: str | None = None, *, inside_wsl: bool = False) -> list[CommandStep]:
     installer_name = miniforge_installer_name("Linux" if inside_wsl else os_name, machine)
     url = miniforge_url("Linux" if inside_wsl else os_name, machine)
-    command_builder = wsl_shell_command if inside_wsl else shell_command
+    if inside_wsl:
+        return [
+            CommandStep("Checking WSL Miniforge prerequisites...", wsl_shell_command(wsl_miniforge_preflight_script(installer_name))),
+            CommandStep("Downloading Miniforge...", wsl_shell_command(wsl_miniforge_download_script(url, installer_name))),
+            CommandStep("Installing Miniforge...", wsl_shell_command(wsl_miniforge_install_script(installer_name))),
+        ]
+
+    command_builder = shell_command
     return [
         CommandStep("Downloading Miniforge...", command_builder(miniforge_download_script(url, installer_name))),
         CommandStep("Installing Miniforge...", command_builder(miniforge_install_script(installer_name))),

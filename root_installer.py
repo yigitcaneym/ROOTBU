@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox
@@ -20,9 +22,11 @@ from rootbu_logic import (
     clean_command_output_lines,
     collect_system_report,
     command_to_text,
+    has_wsl_miniforge_directory_error,
     has_wsl_virtualization_error,
     status_icon,
     windows_creation_flags,
+    wsl_miniforge_directory_error_guidance,
     wsl_virtualization_error_guidance,
 )
 
@@ -36,6 +40,28 @@ ABOUT_TEXT = "\n".join(
         "License: MIT License.",
     ]
 )
+
+
+def resource_path(relative_path: str) -> str:
+    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return str(base_path / relative_path)
+
+
+def set_window_icon(root: tk.Tk) -> None:
+    try:
+        if sys.platform.startswith("win"):
+            icon_path = resource_path("assets/rootbu_icon.ico")
+            if Path(icon_path).is_file():
+                root.iconbitmap(icon_path)
+            return
+
+        icon_path = resource_path("assets/rootbu_icon.png")
+        if Path(icon_path).is_file():
+            image = tk.PhotoImage(file=icon_path)
+            root.iconphoto(True, image)
+            root._rootbu_icon_image = image
+    except Exception:
+        return
 
 
 class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
@@ -248,6 +274,7 @@ class RootBUApp(ctk.CTk):
         super().__init__()
 
         self.title("ROOTBU")
+        set_window_icon(self)
         self.geometry("900x620")
         self.minsize(760, 520)
         self.is_busy = False
@@ -486,6 +513,9 @@ class RootBUApp(ctk.CTk):
                 if has_wsl_virtualization_error(self.last_command_output):
                     self.log_wsl_virtualization_error()
                     return
+                if has_wsl_miniforge_directory_error(self.last_command_output):
+                    self.log_wsl_miniforge_directory_error()
+                    return
                 self.log(STATUS_ERROR, f"Command exited with code {exit_code}.", decorate=True)
                 return
 
@@ -518,6 +548,10 @@ class RootBUApp(ctk.CTk):
 
     def log_wsl_virtualization_error(self) -> None:
         for index, message in enumerate(wsl_virtualization_error_guidance()):
+            self.log(STATUS_ERROR if index == 0 else STATUS_INFO, message, decorate=index == 0)
+
+    def log_wsl_miniforge_directory_error(self) -> None:
+        for index, message in enumerate(wsl_miniforge_directory_error_guidance()):
             self.log(STATUS_ERROR if index == 0 else STATUS_INFO, message, decorate=index == 0)
 
     def _install_root_task(self):

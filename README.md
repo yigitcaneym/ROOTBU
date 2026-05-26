@@ -161,6 +161,12 @@ If Ubuntu installation fails with `HCS_E_HYPERV_NOT_INSTALLED`, or says WSL2 is 
 
 On UTM, Parallels, VMware, or other virtual machines, WSL2 may require nested virtualization and it may not be supported or enabled. A physical Windows machine is recommended for full Windows ROOTBU testing.
 
+### Windows/WSL Miniforge install errors
+
+If Miniforge inside WSL fails with `Could not create directory: ''`, open Ubuntu once and finish the username/password first-run setup. Then reopen ROOTBU and run **Check System** again.
+
+Also check that WSL has enough disk space. ROOTBU does not use `sudo` and does not overwrite an existing `~/miniforge3` directory.
+
 ## Validation
 
 The validation script checks the Python files and the safe command planning logic. It does not install ROOT.

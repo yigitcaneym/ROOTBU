@@ -271,6 +271,17 @@ def assert_prerequisite_plans() -> None:
     assert wsl_plan.can_run
     assert "wsl bash -lc" in wsl_text
     assert "Miniforge3-Linux-x86_64.sh" in wsl_text
+    assert any(step.label == "Checking WSL Miniforge prerequisites..." for step in wsl_plan.steps)
+    assert "HOME_DIR=" in wsl_text
+    assert "test -n \"$HOME_DIR\"" in wsl_text
+    assert "test -n \"$TARGET\"" in wsl_text
+    assert "WSL user:" in wsl_text
+    assert "WSL HOME:" in wsl_text
+    assert "Miniforge target:" in wsl_text
+    assert "command -v curl" in wsl_text
+    assert "df -Pk" in wsl_text
+    assert "[ ! -s \"$INSTALLER\" ]" in wsl_text
+    assert "bash \"$INSTALLER\" -b -p \"$TARGET\"" in wsl_text
     assert_no_destructive_prerequisite_commands(wsl_plan)
 
 
@@ -325,6 +336,40 @@ def assert_wsl_virtualization_error_detection() -> None:
     assert "Virtual Machine Platform" in guidance
     assert "UTM/Parallels/VMware" in guidance
     assert "physical Windows machine" in guidance
+
+
+def assert_wsl_miniforge_preflight_and_errors() -> None:
+    preflight = logic.wsl_miniforge_preflight_script()
+    download = logic.wsl_miniforge_download_script(logic.miniforge_url("Linux"), logic.MINIFORGE_LINUX_INSTALLER)
+    install = logic.wsl_miniforge_install_script(logic.MINIFORGE_LINUX_INSTALLER)
+    combined = "\n".join([preflight, download, install])
+
+    assert 'USER_NAME="$(id -un 2>/dev/null || whoami 2>/dev/null || true)"' in combined
+    assert 'HOME_DIR="${HOME:-$(getent passwd "$USER_NAME" 2>/dev/null | cut -d: -f6)}"' in combined
+    assert 'TARGET="${HOME_DIR}/miniforge3"' in combined
+    assert 'test -n "$HOME_DIR"' in combined
+    assert 'test -n "$TARGET"' in combined
+    assert '"$TARGET" = "/miniforge3"' in combined
+    assert "ERROR: WSL HOME is empty" in combined
+    assert "ERROR: Miniforge target is empty inside WSL" in combined
+    assert "command -v curl" in combined
+    assert "df -Pk" in combined
+    assert "[ ! -s \"$INSTALLER\" ]" in combined
+    assert 'bash "$INSTALLER" -b -p "$TARGET"' in install
+
+    for message in [
+        "ERROR: Could not create directory: ''.",
+        "mkdir: cannot create directory '': No such file or directory",
+        "Check permissions and available disk space (802 MB needed).",
+    ]:
+        assert logic.has_wsl_miniforge_directory_error(message)
+
+    guidance = "\n".join(logic.wsl_miniforge_directory_error_guidance())
+    assert "valid install directory inside WSL" in guidance
+    assert "Open Ubuntu once" in guidance
+    assert "disk space" in guidance
+    assert "does not use sudo" in guidance
+    assert "will not overwrite" in guidance
 
 
 def assert_wsl_distribution_post_install_ui() -> None:
@@ -581,11 +626,20 @@ def assert_distributable_build_files() -> None:
     workflow = BUILD_WORKFLOW_FILE.read_text(encoding="utf-8")
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     release = RELEASE_FILE.read_text(encoding="utf-8")
+    app_source = (PROJECT_ROOT / "root_installer.py").read_text(encoding="utf-8")
 
     for icon_file in ICON_FILES:
         assert icon_file.is_file()
 
     assert "pyinstaller" in build_requirements.lower()
+    assert "def resource_path(" in app_source
+    assert "_MEIPASS" in app_source
+    assert "def set_window_icon(" in app_source
+    assert "root.iconbitmap(icon_path)" in app_source
+    assert "root.iconphoto(True, image)" in app_source
+    assert "assets/rootbu_icon.ico" in app_source
+    assert "assets/rootbu_icon.png" in app_source
+    assert "set_window_icon(self)" in app_source
 
     assert "workflow_dispatch" in workflow
     assert "pull_request" in workflow
@@ -596,6 +650,12 @@ def assert_distributable_build_files() -> None:
     assert "--onefile --name ROOTBU" in workflow
     assert "--icon assets/rootbu_icon.ico" in workflow
     assert "--icon assets/rootbu_icon.icns" in workflow
+    assert '--add-data "assets/rootbu_icon.png;assets"' in workflow
+    assert '--add-data "assets/rootbu_icon.ico;assets"' in workflow
+    assert '--add-data "assets/rootbu_icon.icns;assets"' in workflow
+    assert '--add-data "assets/rootbu_icon.png:assets"' in workflow
+    assert '--add-data "assets/rootbu_icon.ico:assets"' in workflow
+    assert '--add-data "assets/rootbu_icon.icns:assets"' in workflow
     assert "--collect-all customtkinter" in workflow
     assert "--hidden-import darkdetect" in workflow
     assert "ROOTBU-windows.exe" in workflow
@@ -620,6 +680,9 @@ def assert_distributable_build_files() -> None:
     assert "Distributable builds include the ROOTBU app icon" in readme
     assert "bundled only into the ROOTBU executable/app" in readme
     assert "PR into `main` builds test artifacts without creating a GitHub Release" in readme
+    assert "Windows/WSL Miniforge install errors" in readme
+    assert "Could not create directory: ''" in readme
+    assert "does not overwrite an existing `~/miniforge3` directory" in readme
     assert "RELEASE.md" in readme
 
     assert "ROOTBU Release Checklist" in release
@@ -634,6 +697,7 @@ def assert_distributable_build_files() -> None:
     assert "Opening Unsigned macOS Builds" in release
     assert "Apple could not verify ROOTBU is free of malware" in release
     assert "xattr -dr com.apple.quarantine /path/to/ROOTBU.app" in release
+    assert "Could not create directory: ''" in release
 
 
 def main() -> None:
@@ -646,6 +710,7 @@ def main() -> None:
     assert_prerequisite_dialog_ui()
     assert_log_formatting()
     assert_wsl_virtualization_error_detection()
+    assert_wsl_miniforge_preflight_and_errors()
     assert_wsl_distribution_post_install_ui()
     assert_posix_conda_paths_are_platform_neutral()
     assert_interactive_open_plans()

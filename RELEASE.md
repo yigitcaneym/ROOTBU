@@ -36,6 +36,7 @@ python -m py_compile main.py installer.py root_installer.py rootbu_logic.py vali
 - Windows builds are unsigned and may show Microsoft Defender SmartScreen warnings.
 - macOS builds are unsigned and not notarized, so Gatekeeper may warn that "Apple could not verify ROOTBU is free of malware."
 - ROOTBU still asks before installing prerequisites and does not install ROOT automatically.
+- If WSL Miniforge setup fails with `Could not create directory: ''`, open Ubuntu once, finish username/password setup, rerun **Check System**, and confirm WSL has enough disk space. ROOTBU does not use `sudo` or overwrite `~/miniforge3`.
 
 ## Opening Unsigned macOS Builds
 

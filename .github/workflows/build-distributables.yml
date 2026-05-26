@@ -37,7 +37,7 @@ jobs:
 
       - name: Build ROOTBU.exe
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --name ROOTBU --icon assets/rootbu_icon.ico --collect-all customtkinter --hidden-import darkdetect main.py
+          pyinstaller --noconfirm --clean --windowed --onefile --name ROOTBU --icon assets/rootbu_icon.ico --add-data "assets/rootbu_icon.png;assets" --add-data "assets/rootbu_icon.ico;assets" --add-data "assets/rootbu_icon.icns;assets" --collect-all customtkinter --hidden-import darkdetect main.py
           Copy-Item dist\ROOTBU.exe ROOTBU-windows.exe
 
       - name: Upload Windows artifact
@@ -71,7 +71,7 @@ jobs:
 
       - name: Build ROOTBU.app
         run: |
-          pyinstaller --noconfirm --clean --windowed --name ROOTBU --icon assets/rootbu_icon.icns --collect-all customtkinter --hidden-import darkdetect main.py
+          pyinstaller --noconfirm --clean --windowed --name ROOTBU --icon assets/rootbu_icon.icns --add-data "assets/rootbu_icon.png:assets" --add-data "assets/rootbu_icon.ico:assets" --add-data "assets/rootbu_icon.icns:assets" --collect-all customtkinter --hidden-import darkdetect main.py
           ditto -c -k --sequesterRsrc --keepParent dist/ROOTBU.app ROOTBU-macos.zip
 
       - name: Upload macOS artifact
