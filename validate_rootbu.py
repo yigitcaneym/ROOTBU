@@ -119,10 +119,12 @@ def assert_setup_guidance() -> None:
         platform_label="Windows-test",
         wsl_available=True,
         wsl_distribution_available=True,
+        wsl_distribution_name="Ubuntu",
         wsl_conda_available=False,
     )
     wsl_guidance = logic.build_setup_guidance(windows_without_wsl_conda)
     assert "Miniforge3-Linux-x86_64.sh" in wsl_guidance.commands[0]
+    assert "wsl -d Ubuntu bash -lc" in wsl_guidance.commands[0]
     assert any("inside WSL" in message for message in wsl_guidance.messages)
 
     root_available_report = logic.SystemReport(
@@ -263,13 +265,15 @@ def assert_prerequisite_plans() -> None:
         platform_label="Windows-test",
         wsl_available=True,
         wsl_distribution_available=True,
+        wsl_distribution_name="Ubuntu",
         wsl_conda_available=False,
     )
     wsl_plan = logic.build_prerequisite_plan(windows_without_wsl_conda)
     wsl_text = "\n".join(command_texts(wsl_plan))
     assert wsl_plan.needed
     assert wsl_plan.can_run
-    assert "wsl bash -lc" in wsl_text
+    assert "wsl -d Ubuntu bash -lc" in wsl_text
+    assert "wsl bash -lc" not in wsl_text
     assert "Miniforge3-Linux-x86_64.sh" in wsl_text
     assert any(step.label == "Checking WSL Miniforge prerequisites..." for step in wsl_plan.steps)
     assert "HOME_DIR=" in wsl_text
@@ -282,6 +286,8 @@ def assert_prerequisite_plans() -> None:
     assert "df -Pk" in wsl_text
     assert "[ ! -s \"$INSTALLER\" ]" in wsl_text
     assert "bash \"$INSTALLER\" -b -p \"$TARGET\"" in wsl_text
+    assert all(step.command[:4] == ["wsl", "-d", "Ubuntu", "bash"] for step in wsl_plan.steps)
+    assert wsl_plan.manual_commands == command_texts(wsl_plan)
     assert_no_destructive_prerequisite_commands(wsl_plan)
 
 
@@ -339,23 +345,39 @@ def assert_wsl_virtualization_error_detection() -> None:
 
 
 def assert_wsl_miniforge_preflight_and_errors() -> None:
-    preflight = logic.wsl_miniforge_preflight_script()
-    download = logic.wsl_miniforge_download_script(logic.miniforge_url("Linux"), logic.MINIFORGE_LINUX_INSTALLER)
-    install = logic.wsl_miniforge_install_script(logic.MINIFORGE_LINUX_INSTALLER)
+    preflight = logic.wsl_miniforge_preflight_script(distro="Ubuntu")
+    download = logic.wsl_miniforge_download_script(
+        logic.miniforge_url("Linux"),
+        logic.MINIFORGE_LINUX_INSTALLER,
+        distro="Ubuntu",
+    )
+    install = logic.wsl_miniforge_install_script(logic.MINIFORGE_LINUX_INSTALLER, distro="Ubuntu")
     combined = "\n".join([preflight, download, install])
 
-    assert 'USER_NAME="$(id -un 2>/dev/null || whoami 2>/dev/null || true)"' in combined
-    assert 'HOME_DIR="${HOME:-$(getent passwd "$USER_NAME" 2>/dev/null | cut -d: -f6)}"' in combined
+    assert "Selected WSL distro: Ubuntu" in combined
+    assert 'WHOAMI_RESULT="$(whoami 2>/dev/null || true)"' in combined
+    assert 'ID_UN_RESULT="$(id -un 2>/dev/null || true)"' in combined
+    assert 'HOME_DIR="$HOME"' in combined
+    assert 'getent passwd "$USER_NAME"' in combined
     assert 'TARGET="${HOME_DIR}/miniforge3"' in combined
+    assert 'echo "whoami:' in combined
+    assert 'echo "id -un:' in combined
+    assert 'echo "HOME:' in combined
+    assert 'echo "pwd:' in combined
+    assert 'echo "Resolved WSL user:' in combined
+    assert 'echo "Miniforge target:' in combined
     assert 'test -n "$HOME_DIR"' in combined
     assert 'test -n "$TARGET"' in combined
     assert '"$TARGET" = "/miniforge3"' in combined
-    assert "ERROR: WSL HOME is empty" in combined
+    assert "ERROR: Could not determine WSL user from whoami or id -un." in combined
+    assert "ERROR: WSL HOME is empty and getent passwd did not return a home directory." in combined
     assert "ERROR: Miniforge target is empty inside WSL" in combined
     assert "command -v curl" in combined
     assert "df -Pk" in combined
     assert "[ ! -s \"$INSTALLER\" ]" in combined
     assert 'bash "$INSTALLER" -b -p "$TARGET"' in install
+    assert "cd \"$HOME_DIR\"" not in combined
+    assert "pwd under /home" not in combined.lower()
 
     for message in [
         "ERROR: Could not create directory: ''.",
@@ -364,12 +386,31 @@ def assert_wsl_miniforge_preflight_and_errors() -> None:
     ]:
         assert logic.has_wsl_miniforge_directory_error(message)
 
+    for message in [
+        "ERROR: Could not determine WSL user from whoami or id -un.",
+        "ERROR: WSL HOME is empty and getent passwd did not return a home directory.",
+        "ERROR: curl is not available inside WSL.",
+        "ERROR: Not enough disk space inside WSL for Miniforge.",
+    ]:
+        assert logic.has_wsl_miniforge_preflight_error(message)
+
+    conda_probe = logic.wsl_conda_probe_script()
+    assert '$HOME/miniforge3/bin/conda' in conda_probe
+    assert conda_probe.index('[ -x "$HOME/miniforge3/bin/conda"') < conda_probe.index("command -v conda")
+
     guidance = "\n".join(logic.wsl_miniforge_directory_error_guidance())
     assert "valid install directory inside WSL" in guidance
-    assert "Open Ubuntu once" in guidance
+    assert "diagnostic values printed above" in guidance
+    assert "one possible fix" in guidance
     assert "disk space" in guidance
     assert "does not use sudo" in guidance
     assert "will not overwrite" in guidance
+
+    preflight_guidance = "\n".join(logic.wsl_miniforge_preflight_error_guidance("Ubuntu"))
+    assert "diagnostic output from WSL is shown above" in preflight_guidance
+    assert "wsl -d Ubuntu bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'" in preflight_guidance
+    assert "/mnt/c is normal" in preflight_guidance
+    assert "If the diagnostic command fails or HOME is empty" in preflight_guidance
 
 
 def assert_wsl_distribution_post_install_ui() -> None:
@@ -440,13 +481,14 @@ def assert_interactive_open_plans() -> None:
         platform_label="Windows-test",
         wsl_available=True,
         wsl_distribution_available=True,
+        wsl_distribution_name="Ubuntu",
         wsl_conda_available=True,
         wsl_root_in_env=True,
     )
     windows_plan = logic.build_open_plan(windows_report)
     assert windows_plan.opens_terminal
     assert windows_plan.command is not None
-    assert windows_plan.command[:5] == ["cmd.exe", "/c", "start", "ROOTBU ROOT", "wsl.exe"]
+    assert windows_plan.command[:7] == ["cmd.exe", "/c", "start", "ROOTBU ROOT", "wsl.exe", "-d", "Ubuntu"]
     assert "source \"$HOME/miniforge3/bin/activate\" rootbu_root_env" in windows_plan.manual_command
     assert "conda run" not in " ".join(windows_plan.command)
 
@@ -532,6 +574,59 @@ def assert_windows_wsl_without_distribution_detection() -> None:
     )
     assert ["wsl", "--list", "--quiet"] in commands
     assert not any(command[:3] == ["wsl", "bash", "-lc"] for command in commands)
+
+
+def assert_windows_wsl_uses_selected_ubuntu() -> None:
+    commands: list[list[str]] = []
+    original_which = logic.shutil.which
+
+    def fake_which(name: str) -> str | None:
+        if name == "wsl":
+            return r"C:\Windows\System32\wsl.exe"
+        return None
+
+    def runner(command: list[str], _timeout: int) -> logic.ProbeResult:
+        commands.append(command)
+        if command == ["wsl", "--status"]:
+            return logic.ProbeResult(0, "Default Distribution: Ubuntu\nDefault Version: 2")
+        if command == ["wsl", "--list", "--quiet"]:
+            return logic.ProbeResult(0, "Ubuntu\n")
+        if command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"]:
+            script = command[5]
+            if script == logic.wsl_conda_probe_script():
+                return logic.ProbeResult(0, "__ROOTBU_CONDA__=$HOME/miniforge3/bin/conda\nconda 26.3.2")
+            if "env list" in script:
+                return logic.ProbeResult(0, "# conda environments:\nbase  *  /home/faruk/miniforge3\n")
+            return logic.ProbeResult(127, "")
+        return logic.ProbeResult(127, "")
+
+    logic.shutil.which = fake_which
+    try:
+        report = logic.collect_system_report(runner=runner, os_name="Windows")
+    finally:
+        logic.shutil.which = original_which
+
+    assert report.wsl_distribution_available
+    assert report.wsl_distribution_name == "Ubuntu"
+    assert report.wsl_conda_available
+    assert report.wsl_conda_command == "$HOME/miniforge3/bin/conda"
+    assert any(command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"] for command in commands)
+    assert not any(command[:3] == ["wsl", "bash", "-lc"] for command in commands)
+
+    install_plan = logic.build_install_plan(report)
+    assert install_plan.commands
+    assert install_plan.commands[0][:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"]
+
+    prerequisite_report = logic.SystemReport(
+        os_name="Windows",
+        platform_label="Windows-test",
+        wsl_available=True,
+        wsl_distribution_available=True,
+        wsl_distribution_name="Ubuntu",
+        wsl_conda_available=False,
+    )
+    prerequisite_plan = logic.build_prerequisite_plan(prerequisite_report)
+    assert all(step.command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"] for step in prerequisite_plan.steps)
 
 
 def assert_action_states() -> None:
@@ -682,6 +777,8 @@ def assert_distributable_build_files() -> None:
     assert "PR into `main` builds test artifacts without creating a GitHub Release" in readme
     assert "Windows/WSL Miniforge install errors" in readme
     assert "Could not create directory: ''" in readme
+    assert "wsl -d Ubuntu bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'" in readme
+    assert "`pwd` under `/mnt/c` is normal" in readme
     assert "does not overwrite an existing `~/miniforge3` directory" in readme
     assert "RELEASE.md" in readme
 
@@ -698,6 +795,8 @@ def assert_distributable_build_files() -> None:
     assert "Apple could not verify ROOTBU is free of malware" in release
     assert "xattr -dr com.apple.quarantine /path/to/ROOTBU.app" in release
     assert "Could not create directory: ''" in release
+    assert "wsl -d Ubuntu bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'" in release
+    assert "`pwd` under `/mnt/c` is normal" in release
 
 
 def main() -> None:
@@ -716,6 +815,7 @@ def main() -> None:
     assert_interactive_open_plans()
     assert_immediate_miniforge_detection()
     assert_windows_wsl_without_distribution_detection()
+    assert_windows_wsl_uses_selected_ubuntu()
     assert_action_states()
     assert_attribution_and_license()
     assert_distributable_build_files()

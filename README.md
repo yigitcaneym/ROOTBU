@@ -167,6 +167,14 @@ If Miniforge inside WSL fails with `Could not create directory: ''`, open Ubuntu
 
 Also check that WSL has enough disk space. ROOTBU does not use `sudo` and does not overwrite an existing `~/miniforge3` directory.
 
+If WSL user detection fails even though Ubuntu opens normally, run this in PowerShell:
+
+```powershell
+wsl -d Ubuntu bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'
+```
+
+If that command works, report the diagnostic output and retry after updating ROOTBU. A `pwd` under `/mnt/c` is normal when launching ROOTBU from a Windows folder.
+
 ## Validation
 
 The validation script checks the Python files and the safe command planning logic. It does not install ROOT.

@@ -23,10 +23,12 @@ from rootbu_logic import (
     collect_system_report,
     command_to_text,
     has_wsl_miniforge_directory_error,
+    has_wsl_miniforge_preflight_error,
     has_wsl_virtualization_error,
     status_icon,
     windows_creation_flags,
     wsl_miniforge_directory_error_guidance,
+    wsl_miniforge_preflight_error_guidance,
     wsl_virtualization_error_guidance,
 )
 
@@ -513,6 +515,9 @@ class RootBUApp(ctk.CTk):
                 if has_wsl_virtualization_error(self.last_command_output):
                     self.log_wsl_virtualization_error()
                     return
+                if has_wsl_miniforge_preflight_error(self.last_command_output):
+                    self.log_wsl_miniforge_preflight_error(report)
+                    return
                 if has_wsl_miniforge_directory_error(self.last_command_output):
                     self.log_wsl_miniforge_directory_error()
                     return
@@ -552,6 +557,11 @@ class RootBUApp(ctk.CTk):
 
     def log_wsl_miniforge_directory_error(self) -> None:
         for index, message in enumerate(wsl_miniforge_directory_error_guidance()):
+            self.log(STATUS_ERROR if index == 0 else STATUS_INFO, message, decorate=index == 0)
+
+    def log_wsl_miniforge_preflight_error(self, report=None) -> None:
+        distro = getattr(report, "wsl_distribution_name", "") or "Ubuntu"
+        for index, message in enumerate(wsl_miniforge_preflight_error_guidance(distro)):
             self.log(STATUS_ERROR if index == 0 else STATUS_INFO, message, decorate=index == 0)
 
     def _install_root_task(self):
