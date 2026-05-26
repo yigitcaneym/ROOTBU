@@ -95,10 +95,22 @@ def assert_setup_guidance() -> None:
     assert any("Install Prerequisites" in message for message in windows_guidance.messages)
     assert not any("will not run wsl --install automatically" in message for message in windows_guidance.messages)
 
+    windows_without_wsl_distro = logic.SystemReport(
+        os_name="Windows",
+        platform_label="Windows-test",
+        wsl_available=True,
+        wsl_distribution_available=False,
+    )
+    distro_guidance = logic.build_setup_guidance(windows_without_wsl_distro)
+    assert distro_guidance.commands == ["wsl --install -d Ubuntu"]
+    assert any("Ubuntu" in message for message in distro_guidance.messages)
+    assert any("no Linux distribution" in message for message in distro_guidance.messages)
+
     windows_without_wsl_conda = logic.SystemReport(
         os_name="Windows",
         platform_label="Windows-test",
         wsl_available=True,
+        wsl_distribution_available=True,
         wsl_conda_available=False,
     )
     wsl_guidance = logic.build_setup_guidance(windows_without_wsl_conda)
@@ -119,6 +131,7 @@ def assert_setup_guidance() -> None:
         os_name="Windows",
         platform_label="Windows-test",
         wsl_available=True,
+        wsl_distribution_available=True,
         wsl_conda_available=True,
         wsl_root_available=True,
     )
@@ -211,10 +224,37 @@ def assert_prerequisite_plans() -> None:
     assert not windows_admin_plan.opens_elevated
     assert command_texts(windows_admin_plan) == ["wsl --install"]
 
+    windows_without_wsl_distro = logic.SystemReport(
+        os_name="Windows",
+        platform_label="Windows-test",
+        wsl_available=True,
+        wsl_distribution_available=False,
+    )
+    distro_plan = logic.build_prerequisite_plan(windows_without_wsl_distro, windows_is_admin=False)
+    distro_text = "\n".join(command_texts(distro_plan))
+    assert distro_plan.needed
+    assert distro_plan.can_run
+    assert distro_plan.requires_admin
+    assert distro_plan.opens_elevated
+    assert distro_plan.install_name == "WSL Linux distribution"
+    assert distro_plan.summary_command == "wsl --install -d Ubuntu"
+    assert distro_plan.manual_commands == ["wsl --install -d Ubuntu"]
+    assert "Start-Process" in distro_text
+    assert "wsl --install -d Ubuntu" in distro_text
+    assert "Miniforge" not in distro_plan.title
+    assert_no_destructive_prerequisite_commands(distro_plan)
+
+    distro_admin_plan = logic.build_prerequisite_plan(windows_without_wsl_distro, windows_is_admin=True)
+    assert distro_admin_plan.needed
+    assert distro_admin_plan.can_run
+    assert not distro_admin_plan.opens_elevated
+    assert command_texts(distro_admin_plan) == ["wsl --install -d Ubuntu"]
+
     windows_without_wsl_conda = logic.SystemReport(
         os_name="Windows",
         platform_label="Windows-test",
         wsl_available=True,
+        wsl_distribution_available=True,
         wsl_conda_available=False,
     )
     wsl_plan = logic.build_prerequisite_plan(windows_without_wsl_conda)
@@ -235,6 +275,8 @@ def assert_prerequisite_dialog_ui() -> None:
     assert '"Copy Command"' in source
     assert '"Install Miniforge"' in source
     assert '"Install WSL"' in source
+    assert '"Install Ubuntu"' in source
+    assert "WSL Linux distribution" in source
     assert "messagebox.askyesno(\"Confirm prerequisite installation\"" not in source
 
 
@@ -319,6 +361,7 @@ def assert_interactive_open_plans() -> None:
         os_name="Windows",
         platform_label="Windows-test",
         wsl_available=True,
+        wsl_distribution_available=True,
         wsl_conda_available=True,
         wsl_root_in_env=True,
     )
@@ -354,6 +397,42 @@ def assert_immediate_miniforge_detection() -> None:
         os.environ["HOME"] = original_home
 
 
+def assert_windows_wsl_without_distribution_detection() -> None:
+    commands: list[list[str]] = []
+    original_which = logic.shutil.which
+
+    def fake_which(name: str) -> str | None:
+        if name == "wsl":
+            return r"C:\Windows\System32\wsl.exe"
+        return None
+
+    def runner(command: list[str], _timeout: int) -> logic.ProbeResult:
+        commands.append(command)
+        if command == ["wsl", "--status"]:
+            return logic.ProbeResult(0, "Default Version: 2")
+        if command == ["wsl", "--list", "--quiet"]:
+            return logic.ProbeResult(0, "")
+        return logic.ProbeResult(127, "")
+
+    logic.shutil.which = fake_which
+    try:
+        report = logic.collect_system_report(runner=runner, os_name="Windows")
+    finally:
+        logic.shutil.which = original_which
+
+    assert report.wsl_available
+    assert not report.wsl_distribution_available
+    assert not report.wsl_conda_available
+    assert any(
+        item.name == "WSL distribution"
+        and item.status == logic.STATUS_WARN
+        and "no Linux distribution is installed yet" in item.detail
+        for item in report.checks
+    )
+    assert ["wsl", "--list", "--quiet"] in commands
+    assert not any(command[:3] == ["wsl", "bash", "-lc"] for command in commands)
+
+
 def assert_action_states() -> None:
     original_home = os.environ.get("HOME")
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -376,6 +455,18 @@ def assert_action_states() -> None:
         assert missing_wsl_state.install_prerequisites_label == "Install Prerequisites"
         assert not missing_wsl_state.install_root_enabled
         assert not missing_wsl_state.open_root_enabled
+
+        missing_wsl_distro = logic.SystemReport(
+            os_name="Windows",
+            platform_label="Windows-test",
+            wsl_available=True,
+            wsl_distribution_available=False,
+        )
+        missing_wsl_distro_state = logic.build_action_state(missing_wsl_distro)
+        assert missing_wsl_distro_state.install_prerequisites_enabled
+        assert missing_wsl_distro_state.install_prerequisites_label == "Install Prerequisites"
+        assert not missing_wsl_distro_state.install_root_enabled
+        assert not missing_wsl_distro_state.open_root_enabled
 
         conda_no_root = logic.SystemReport(
             os_name="Darwin",
@@ -441,6 +532,7 @@ def main() -> None:
     assert_posix_conda_paths_are_platform_neutral()
     assert_interactive_open_plans()
     assert_immediate_miniforge_detection()
+    assert_windows_wsl_without_distribution_detection()
     assert_action_states()
     assert_attribution_and_license()
     print("ROOTBU validation passed.")

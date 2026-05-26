@@ -76,11 +76,20 @@ If ROOTBU is not already running as Administrator, it may ask Windows to open an
 
 You can still copy the command and run it manually in Administrator PowerShell. Restart Windows if the WSL installer asks you to. Then open ROOTBU and run **Check System** again.
 
+If WSL is installed but no Linux distribution is installed yet, **Install Prerequisites** can install the recommended Ubuntu distribution after confirmation:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+Ubuntu may ask for a Linux username and password on first launch. Finish that setup, then reopen ROOTBU and run **Check System** again.
+
 If WSL is present but conda is missing inside WSL, **Install Prerequisites** can install Miniforge inside WSL to `~/miniforge3` after confirmation. ROOTBU will stop if that path already exists and will not use `sudo`.
 
 ## Safety Notes
 
 - ROOTBU runs `wsl --install` only after confirmation, and does not restart Windows automatically.
+- ROOTBU installs an Ubuntu WSL distribution only after confirmation, and does not continue to Miniforge until a distribution exists.
 - ROOTBU can install Miniforge only after showing the exact plan and getting confirmation.
 - ROOTBU does not install Miniconda or Anaconda.
 - ROOTBU does not remove existing conda environments.
@@ -94,6 +103,7 @@ If WSL is present but conda is missing inside WSL, **Install Prerequisites** can
 ## Troubleshooting
 
 - If WSL is missing on Windows, use **Install Prerequisites** or run `wsl --install` manually in Administrator PowerShell, then run **Check System** again.
+- If WSL is installed but no Linux distribution exists, use **Install Prerequisites** or run `wsl --install -d Ubuntu` manually, finish Ubuntu first-run setup, then run **Check System** again.
 - If conda is missing, run **Check System**, then use **Install Prerequisites** or follow the manual Miniforge commands in the log.
 - If conda is installed but not detected, open the app from a terminal where `conda --version` works.
 - If `~/miniforge3` already exists but conda is not detected, ROOTBU will not overwrite it. Check whether `~/miniforge3/bin/conda --version` works in a terminal.

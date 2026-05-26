@@ -75,6 +75,8 @@ class SystemReport:
     native_root_available: bool = False
     native_root_command: Command | None = None
     wsl_available: bool = False
+    wsl_distribution_available: bool = False
+    wsl_distribution_detail: str = ""
     wsl_conda_available: bool = False
     wsl_conda_command: str = ""
     wsl_env_exists: bool = False
@@ -414,8 +416,34 @@ def check_wsl_available(runner: Runner) -> bool:
     status = runner(["wsl", "--status"], 10)
     if status.returncode == 0:
         return True
+    if "no installed distributions" in status.stdout.lower():
+        return True
     distributions = runner(["wsl", "--list", "--quiet"], 10)
-    return distributions.returncode == 0
+    if distributions.returncode == 0:
+        return True
+    return "no installed distributions" in distributions.stdout.lower()
+
+
+def parse_wsl_distribution_names(output: str) -> list[str]:
+    names: list[str] = []
+    for raw_line in output.splitlines():
+        name = raw_line.replace("\x00", "").strip().lstrip("*").strip()
+        if not name:
+            continue
+        lowered = name.lower()
+        if "no installed distributions" in lowered or "wsl.exe --install" in lowered:
+            continue
+        names.append(name)
+    return names
+
+
+def check_wsl_distribution_available(runner: Runner) -> tuple[bool, str]:
+    result = runner(["wsl", "--list", "--quiet"], 10)
+    names = parse_wsl_distribution_names(result.stdout)
+    if result.returncode == 0 and names:
+        return True, f"Installed distribution(s): {', '.join(names)}"
+
+    return False, "WSL is installed, but no Linux distribution is installed yet."
 
 
 def run_wsl_probe(script: str, runner: Runner, timeout: int = 15) -> ProbeResult:
@@ -433,6 +461,14 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
         report.wsl_available = check_wsl_available(runner)
         if report.wsl_available:
             report.checks.append(CheckItem("WSL", STATUS_OK, "WSL command is available."))
+            report.wsl_distribution_available, report.wsl_distribution_detail = check_wsl_distribution_available(runner)
+            report.checks.append(
+                CheckItem(
+                    "WSL distribution",
+                    STATUS_OK if report.wsl_distribution_available else STATUS_WARN,
+                    report.wsl_distribution_detail,
+                )
+            )
         else:
             report.checks.append(
                 CheckItem("WSL", STATUS_WARN, "WSL was not detected. ROOTBU can run wsl --install after confirmation.")
@@ -465,7 +501,7 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
     else:
         report.checks.append(CheckItem("ROOT (native)", STATUS_WARN, root_detail))
 
-    if os_name == "Windows" and report.wsl_available:
+    if os_name == "Windows" and report.wsl_available and report.wsl_distribution_available:
         wsl_conda = run_wsl_probe(wsl_conda_probe_script(), runner)
         report.wsl_conda_available = wsl_conda.returncode == 0
         if report.wsl_conda_available:
@@ -503,6 +539,9 @@ def build_install_plan(report: SystemReport) -> InstallPlan:
         messages.append("Windows installs are handled through WSL. Use Install Prerequisites first if WSL is missing.")
         if not report.wsl_available:
             messages.append("Install WSL first, then run Check System again.")
+            return InstallPlan("Windows / WSL", messages, [])
+        if not report.wsl_distribution_available:
+            messages.append("Install a WSL Linux distribution first, then run Check System again.")
             return InstallPlan("Windows / WSL", messages, [])
         if not report.wsl_conda_available:
             messages.append("Install Miniforge or Miniconda inside WSL first, then run Check System again.")
@@ -686,7 +725,7 @@ def build_open_plan(
 
 def conda_available_for_root_install(report: SystemReport) -> bool:
     if report.os_name == "Windows":
-        return report.wsl_available and report.wsl_conda_available
+        return report.wsl_available and report.wsl_distribution_available and report.wsl_conda_available
     return report.native_conda is not None
 
 
@@ -768,13 +807,7 @@ def powershell_single_quote(text: str) -> str:
     return text.replace("'", "''")
 
 
-def elevated_wsl_install_command() -> Command:
-    admin_command = (
-        "wsl --install; "
-        'Write-Host ""; '
-        'Write-Host "WSL installation may require a restart. Please restart Windows if prompted, then reopen ROOTBU and run Check System."; '
-        'Read-Host "Press Enter to close this window"'
-    )
+def elevated_powershell_command(admin_command: str) -> Command:
     script = (
         "$ErrorActionPreference = 'Stop'; "
         f"$adminCommand = '{powershell_single_quote(admin_command)}'; "
@@ -785,10 +818,29 @@ def elevated_wsl_install_command() -> Command:
     return ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
 
 
+def elevated_wsl_install_command(command: str, completion_message: str) -> Command:
+    admin_command = (
+        f"{command}; "
+        'Write-Host ""; '
+        f'Write-Host "{completion_message}"; '
+        'Read-Host "Press Enter to close this window"'
+    )
+    return elevated_powershell_command(admin_command)
+
+
 def build_wsl_install_steps(*, windows_is_admin: bool) -> list[CommandStep]:
     if windows_is_admin:
         return [CommandStep("Installing WSL...", ["wsl", "--install"])]
-    return [CommandStep("Opening elevated PowerShell for WSL installation...", elevated_wsl_install_command())]
+    message = "WSL installation may require a restart. Please restart Windows if prompted, then reopen ROOTBU and run Check System."
+    return [CommandStep("Opening elevated PowerShell for WSL installation...", elevated_wsl_install_command("wsl --install", message))]
+
+
+def build_wsl_distribution_steps(*, windows_is_admin: bool) -> list[CommandStep]:
+    command = "wsl --install -d Ubuntu"
+    if windows_is_admin:
+        return [CommandStep("Installing Ubuntu WSL distribution...", ["wsl", "--install", "-d", "Ubuntu"])]
+    message = "Ubuntu setup may require a restart or first-run username/password setup. Reopen ROOTBU and run Check System afterward."
+    return [CommandStep("Opening elevated PowerShell for Ubuntu installation...", elevated_wsl_install_command(command, message))]
 
 
 def miniforge_download_script(url: str, installer_name: str) -> str:
@@ -850,6 +902,28 @@ def build_prerequisite_plan(
                 ],
                 steps=build_wsl_install_steps(windows_is_admin=admin),
                 manual_commands=["wsl --install"],
+            )
+
+        if not report.wsl_distribution_available:
+            admin = is_windows_admin() if windows_is_admin is None else windows_is_admin
+            return PrerequisitePlan(
+                context="Windows / WSL",
+                title="Install Ubuntu",
+                needed=True,
+                install_name="WSL Linux distribution",
+                install_location="Ubuntu inside WSL",
+                summary_command="wsl --install -d Ubuntu",
+                requires_admin=True,
+                opens_elevated=not admin,
+                messages=[
+                    "WSL is installed, but no Linux distribution is installed yet.",
+                    "ROOTBU can install the recommended Ubuntu distribution after confirmation.",
+                    "Ubuntu may ask for a Linux username and password on first launch.",
+                    "ROOTBU will not install ROOT in this step.",
+                    "After Ubuntu setup finishes, reopen ROOTBU and run Check System.",
+                ],
+                steps=build_wsl_distribution_steps(windows_is_admin=admin),
+                manual_commands=["wsl --install -d Ubuntu"],
             )
 
         if not report.wsl_conda_available:
@@ -971,6 +1045,19 @@ def build_setup_guidance(report: SystemReport) -> SetupGuidance:
                     "After restart, open ROOTBU again and run Check System.",
                 ],
                 ["wsl --install"],
+            )
+
+        if not report.wsl_distribution_available:
+            return SetupGuidance(
+                "Next Steps",
+                [
+                    "WSL is installed, but no Linux distribution is installed yet.",
+                    "Use Install Prerequisites to install the recommended Ubuntu distribution after confirmation.",
+                    "Ubuntu may ask for a Linux username and password on first launch.",
+                    "You can also run this command manually in Administrator PowerShell:",
+                    "After Ubuntu setup finishes, reopen ROOTBU and run Check System.",
+                ],
+                ["wsl --install -d Ubuntu"],
             )
 
         if not report.wsl_conda_available:

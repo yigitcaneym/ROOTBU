@@ -41,6 +41,7 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
         super().__init__(parent)
         self.parent = parent
         self.commands_text = commands_text
+        self.copy_text = plan.summary_command or commands_text
         self.result = False
 
         self.title("Install Missing Prerequisite")
@@ -119,7 +120,7 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
 
         copy_button = ctk.CTkButton(
             footer,
-            text="Copy Command" if self.is_wsl_plan(plan) else "Copy Commands",
+            text="Copy Command" if self.is_single_windows_command_plan(plan) else "Copy Commands",
             width=140,
             command=self.copy_commands,
         )
@@ -138,7 +139,7 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
 
         install_button = ctk.CTkButton(
             footer,
-            text="Install WSL" if self.is_wsl_plan(plan) else "Install Miniforge",
+            text=self.install_button_label(plan),
             width=150,
             command=self.confirm,
         )
@@ -150,12 +151,31 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
     def is_wsl_plan(self, plan) -> bool:
         return plan.summary_command == "wsl --install"
 
+    def is_wsl_distribution_plan(self, plan) -> bool:
+        return plan.summary_command == "wsl --install -d Ubuntu"
+
+    def is_single_windows_command_plan(self, plan) -> bool:
+        return self.is_wsl_plan(plan) or self.is_wsl_distribution_plan(plan)
+
+    def install_button_label(self, plan) -> str:
+        if self.is_wsl_plan(plan):
+            return "Install WSL"
+        if self.is_wsl_distribution_plan(plan):
+            return "Install Ubuntu"
+        return "Install Miniforge"
+
     def summary_rows(self, plan, platform_label: str) -> list[tuple[str, str]]:
         if self.is_wsl_plan(plan):
             return [
                 ("Missing prerequisite", "Windows Subsystem for Linux (WSL)"),
                 ("Command", plan.summary_command),
                 ("Platform", platform_label),
+            ]
+        if self.is_wsl_distribution_plan(plan):
+            return [
+                ("Missing prerequisite", "WSL Linux distribution"),
+                ("Recommended distribution", "Ubuntu"),
+                ("Command", plan.summary_command),
             ]
 
         return [
@@ -171,6 +191,13 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
                 "This may require a Windows restart",
                 "ROOTBU will not install ROOT in this step",
                 "After restart, open ROOTBU again and run Check System",
+            ]
+        if self.is_wsl_distribution_plan(plan):
+            return [
+                "This may require a restart",
+                "Ubuntu may ask for a Linux username/password on first launch",
+                "ROOTBU will not install ROOT in this step",
+                "After Ubuntu setup finishes, reopen ROOTBU and run Check System",
             ]
 
         return [
@@ -201,7 +228,7 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
 
     def copy_commands(self) -> None:
         self.clipboard_clear()
-        self.clipboard_append(self.commands_text)
+        self.clipboard_append(self.copy_text)
         self.status_label.configure(text="Commands copied.")
 
     def cancel(self) -> None:
@@ -461,6 +488,11 @@ class RootBUApp(ctk.CTk):
                 STATUS_INFO,
                 "WSL installation may require a restart. Please restart Windows if prompted, then reopen ROOTBU and run Check System.",
             )
+        if plan.summary_command == "wsl --install -d Ubuntu":
+            self.log(
+                STATUS_INFO,
+                "Ubuntu setup may require a restart or first-run username/password setup. Finish Ubuntu setup, then reopen ROOTBU and run Check System.",
+            )
         self.log(STATUS_INFO, "Refreshing Check System after prerequisite installation.")
         self.refresh_system_state()
 
@@ -607,6 +639,8 @@ class RootBUApp(ctk.CTk):
         if plan.context == "Windows / WSL":
             if plan.summary_command == "wsl --install":
                 return "Windows"
+            if plan.summary_command == "wsl --install -d Ubuntu":
+                return "Windows / WSL"
             return "WSL"
         if plan.context == "Linux":
             return "Linux"
