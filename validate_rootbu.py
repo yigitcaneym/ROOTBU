@@ -739,6 +739,7 @@ def assert_distributable_build_files() -> None:
     assert "workflow_dispatch" in workflow
     assert "pull_request" in workflow
     assert 'branches: ["main"]' in workflow
+    release_job = workflow.split("\n  release:", 1)[1]
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
     assert "pyinstaller --noconfirm --clean --windowed" in workflow
@@ -760,6 +761,7 @@ def assert_distributable_build_files() -> None:
     assert "gh release create" in workflow
     assert "gh release upload" in workflow
     assert "if: startsWith(github.ref, 'refs/tags/v')" in workflow
+    assert "uses: actions/checkout@v4" in release_job or "--repo yigitcaneym/ROOTBU" in release_job
     assert "refs/tags/v" in workflow
 
     assert "## Download ROOTBU" in readme
