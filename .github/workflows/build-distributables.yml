@@ -1,0 +1,107 @@
+name: Build Distributables
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["main"]
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows executable
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Validate sources
+        run: |
+          python -B validate_rootbu.py
+          python -m py_compile main.py installer.py root_installer.py rootbu_logic.py validate_rootbu.py
+
+      - name: Build ROOTBU.exe
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onefile --name ROOTBU --icon assets/rootbu_icon.ico --add-data "assets/rootbu_icon.png;assets" --add-data "assets/rootbu_icon.ico;assets" --add-data "assets/rootbu_icon.icns;assets" --collect-all customtkinter --hidden-import darkdetect main.py
+          Copy-Item dist\ROOTBU.exe ROOTBU-windows.exe
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ROOTBU-windows
+          path: ROOTBU-windows.exe
+
+  build-macos:
+    name: Build macOS app
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Validate sources
+        run: |
+          python -B validate_rootbu.py
+          python -m py_compile main.py installer.py root_installer.py rootbu_logic.py validate_rootbu.py
+
+      - name: Build ROOTBU.app
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name ROOTBU --icon assets/rootbu_icon.icns --add-data "assets/rootbu_icon.png:assets" --add-data "assets/rootbu_icon.ico:assets" --add-data "assets/rootbu_icon.icns:assets" --collect-all customtkinter --hidden-import darkdetect main.py
+          ditto -c -k --sequesterRsrc --keepParent dist/ROOTBU.app ROOTBU-macos.zip
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ROOTBU-macos
+          path: ROOTBU-macos.zip
+
+  release:
+    name: Attach artifacts to GitHub Release
+    needs:
+      - build-windows
+      - build-macos
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" release-assets/* --clobber
+          else
+            gh release create "$TAG_NAME" release-assets/* --title "$TAG_NAME" --notes "ROOTBU release $TAG_NAME"
+          fi

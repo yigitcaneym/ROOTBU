@@ -52,6 +52,18 @@ WSL_VIRTUALIZATION_ERROR_PATTERNS = (
     "virtualization is turned on",
     "createvm",
 )
+WSL_MINIFORGE_DIRECTORY_ERROR_PATTERNS = (
+    "could not create directory: ''",
+    "mkdir: cannot create directory ''",
+    "check permissions and available disk space",
+)
+WSL_MINIFORGE_PREFLIGHT_ERROR_PATTERNS = (
+    "could not determine wsl user",
+    "wsl home is empty",
+    "miniforge target is empty inside wsl",
+    "curl is not available inside wsl",
+    "not enough disk space inside wsl",
+)
 
 Command = list[str]
 
@@ -84,6 +96,7 @@ class SystemReport:
     wsl_available: bool = False
     wsl_distribution_available: bool = False
     wsl_distribution_detail: str = ""
+    wsl_distribution_name: str = ""
     wsl_conda_available: bool = False
     wsl_conda_command: str = ""
     wsl_env_exists: bool = False
@@ -287,6 +300,37 @@ def wsl_virtualization_error_guidance() -> list[str]:
     ]
 
 
+def has_wsl_miniforge_directory_error(output: str) -> bool:
+    lowered = output.lower()
+    return any(pattern in lowered for pattern in WSL_MINIFORGE_DIRECTORY_ERROR_PATTERNS)
+
+
+def wsl_miniforge_directory_error_guidance() -> list[str]:
+    return [
+        "Miniforge could not determine a valid install directory inside WSL.",
+        "The diagnostic values printed above show which WSL user, HOME, pwd, and target ROOTBU saw.",
+        "If Ubuntu opens normally, run the diagnostic command from the README and compare its output with the ROOTBU log.",
+        "Opening Ubuntu once and finishing first-run setup is one possible fix if HOME is empty or user detection fails.",
+        "Also check available disk space inside WSL.",
+        "ROOTBU does not use sudo and will not overwrite an existing ~/miniforge3 directory.",
+    ]
+
+
+def has_wsl_miniforge_preflight_error(output: str) -> bool:
+    lowered = output.lower()
+    return any(pattern in lowered for pattern in WSL_MINIFORGE_PREFLIGHT_ERROR_PATTERNS)
+
+
+def wsl_miniforge_preflight_error_guidance(distro: str = "Ubuntu") -> list[str]:
+    diagnostic_command = f"wsl -d {distro} bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'"
+    return [
+        "WSL Miniforge preflight did not pass. The diagnostic output from WSL is shown above.",
+        f"If Ubuntu opens normally, run this diagnostic command in PowerShell: {diagnostic_command}",
+        "A pwd under /mnt/c is normal when ROOTBU is launched from a Windows folder.",
+        "If the diagnostic command fails or HOME is empty, open Ubuntu once and finish first-run setup, then rerun Check System.",
+    ]
+
+
 def first_output_line(output: str) -> str:
     for line in output.splitlines():
         clean = line.strip()
@@ -305,10 +349,10 @@ def first_conda_version_line(output: str) -> str:
 
 def wsl_conda_probe_script() -> str:
     return (
-        'if command -v conda >/dev/null 2>&1; then '
-        'CONDA_CMD="$(command -v conda)"; '
-        'elif [ -x "$HOME/miniforge3/bin/conda" ]; then '
+        'if [ -x "$HOME/miniforge3/bin/conda" ]; then '
         'CONDA_CMD="$HOME/miniforge3/bin/conda"; '
+        'elif command -v conda >/dev/null 2>&1; then '
+        'CONDA_CMD="$(command -v conda)"; '
         'else exit 127; fi; '
         'printf "__ROOTBU_CONDA__=%s\\n" "$CONDA_CMD"; '
         '"$CONDA_CMD" --version'
@@ -467,17 +511,34 @@ def parse_wsl_distribution_names(output: str) -> list[str]:
     return names
 
 
-def check_wsl_distribution_available(runner: Runner) -> tuple[bool, str]:
+def select_wsl_distribution_name(names: list[str]) -> str:
+    for name in names:
+        if name.lower() == "ubuntu":
+            return name
+    for name in names:
+        if name.lower().startswith("ubuntu"):
+            return name
+    return names[0] if names else ""
+
+
+def check_wsl_distribution_available(runner: Runner) -> tuple[bool, str, str]:
     result = runner(["wsl", "--list", "--quiet"], 10)
     names = parse_wsl_distribution_names(result.stdout)
     if result.returncode == 0 and names:
-        return True, f"Installed distribution(s): {', '.join(names)}"
+        selected = select_wsl_distribution_name(names)
+        return True, f"Installed distribution(s): {', '.join(names)}", selected
 
-    return False, "WSL is installed, but no Linux distribution is installed yet."
+    return False, "WSL is installed, but no Linux distribution is installed yet.", ""
 
 
-def run_wsl_probe(script: str, runner: Runner, timeout: int = 15) -> ProbeResult:
-    return runner(["wsl", "bash", "-lc", script], timeout)
+def wsl_shell_command(script: str, distro: str = "") -> Command:
+    if distro:
+        return ["wsl", "-d", distro, "bash", "-lc", script]
+    return ["wsl", "bash", "-lc", script]
+
+
+def run_wsl_probe(script: str, runner: Runner, timeout: int = 15, distro: str = "") -> ProbeResult:
+    return runner(wsl_shell_command(script, distro), timeout)
 
 
 def collect_system_report(runner: Runner = run_probe, os_name: str | None = None) -> SystemReport:
@@ -491,7 +552,11 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
         report.wsl_available = check_wsl_available(runner)
         if report.wsl_available:
             report.checks.append(CheckItem("WSL", STATUS_OK, "WSL command is available."))
-            report.wsl_distribution_available, report.wsl_distribution_detail = check_wsl_distribution_available(runner)
+            (
+                report.wsl_distribution_available,
+                report.wsl_distribution_detail,
+                report.wsl_distribution_name,
+            ) = check_wsl_distribution_available(runner)
             report.checks.append(
                 CheckItem(
                     "WSL distribution",
@@ -499,6 +564,8 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
                     report.wsl_distribution_detail,
                 )
             )
+            if report.wsl_distribution_name:
+                report.checks.append(CheckItem("Selected WSL distro", STATUS_INFO, report.wsl_distribution_name))
         else:
             report.checks.append(
                 CheckItem("WSL", STATUS_WARN, "WSL was not detected. ROOTBU can run wsl --install after confirmation.")
@@ -532,21 +599,27 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
         report.checks.append(CheckItem("ROOT (native)", STATUS_WARN, root_detail))
 
     if os_name == "Windows" and report.wsl_available and report.wsl_distribution_available:
-        wsl_conda = run_wsl_probe(wsl_conda_probe_script(), runner)
+        distro = report.wsl_distribution_name
+        wsl_conda = run_wsl_probe(wsl_conda_probe_script(), runner, distro=distro)
         report.wsl_conda_available = wsl_conda.returncode == 0
         if report.wsl_conda_available:
             report.wsl_conda_command = parse_wsl_conda_command(wsl_conda.stdout)
             report.checks.append(CheckItem("Conda (WSL)", STATUS_OK, first_conda_version_line(wsl_conda.stdout) or "Conda is available in WSL."))
-            wsl_env_list = run_wsl_probe(f"{wsl_conda_shell_expr(report)} env list", runner)
+            wsl_env_list = run_wsl_probe(f"{wsl_conda_shell_expr(report)} env list", runner, distro=distro)
             report.wsl_env_exists = ENV_NAME in parse_conda_env_names(wsl_env_list.stdout) if wsl_env_list.returncode == 0 else False
             env_detail = f"Project environment {ENV_NAME} exists in WSL." if report.wsl_env_exists else f"{ENV_NAME} does not exist in WSL yet."
             report.checks.append(CheckItem("Project env (WSL)", STATUS_OK if report.wsl_env_exists else STATUS_INFO, env_detail))
             if report.wsl_env_exists:
-                report.wsl_root_in_env = run_wsl_probe(f"{wsl_conda_shell_expr(report)} run -n {ENV_NAME} root --version", runner, 20).returncode == 0
+                report.wsl_root_in_env = run_wsl_probe(
+                    f"{wsl_conda_shell_expr(report)} run -n {ENV_NAME} root --version",
+                    runner,
+                    20,
+                    distro=distro,
+                ).returncode == 0
         else:
             report.checks.append(CheckItem("Conda (WSL)", STATUS_WARN, missing_wsl_conda_message()))
 
-        wsl_root = run_wsl_probe("command -v root >/dev/null 2>&1 && root --version", runner, 12)
+        wsl_root = run_wsl_probe("command -v root >/dev/null 2>&1 && root --version", runner, 12, distro=distro)
         report.wsl_root_available = wsl_root.returncode == 0
         if report.wsl_root_in_env:
             report.checks.append(CheckItem("ROOT (WSL)", STATUS_OK, f"ROOT is available in WSL environment {ENV_NAME}."))
@@ -580,10 +653,16 @@ def build_install_plan(report: SystemReport) -> InstallPlan:
             messages.append(f"ROOT is already available in WSL environment {ENV_NAME}.")
             return InstallPlan("Windows / WSL", messages, [])
         if report.wsl_env_exists:
-            command = ["wsl", "bash", "-lc", f"{wsl_conda_shell_expr(report)} install -y -n {ENV_NAME} -c {CONDA_CHANNEL} {ROOT_PACKAGE}"]
+            command = wsl_shell_command(
+                f"{wsl_conda_shell_expr(report)} install -y -n {ENV_NAME} -c {CONDA_CHANNEL} {ROOT_PACKAGE}",
+                report.wsl_distribution_name,
+            )
             messages.append(f"{ENV_NAME} exists in WSL; ROOTBU will add ROOT to that project environment.")
         else:
-            command = ["wsl", "bash", "-lc", f"{wsl_conda_shell_expr(report)} create -y -n {ENV_NAME} -c {CONDA_CHANNEL} {ROOT_PACKAGE}"]
+            command = wsl_shell_command(
+                f"{wsl_conda_shell_expr(report)} create -y -n {ENV_NAME} -c {CONDA_CHANNEL} {ROOT_PACKAGE}",
+                report.wsl_distribution_name,
+            )
             messages.append(f"ROOTBU will create the WSL conda environment {ENV_NAME}.")
         return InstallPlan("Windows / WSL", messages, [command])
 
@@ -691,9 +770,13 @@ def linux_terminal_command(terminal: str, shell_command: str) -> Command:
     return [terminal, "-e", "bash", "-lc", interactive_script]
 
 
-def wsl_terminal_command(shell_command: str) -> Command:
+def wsl_terminal_command(shell_command: str, distro: str = "") -> Command:
     interactive_script = f"{shell_command}; exec bash"
-    return ["cmd.exe", "/c", "start", "ROOTBU ROOT", "wsl.exe", "bash", "-lc", interactive_script]
+    command = ["cmd.exe", "/c", "start", "ROOTBU ROOT", "wsl.exe"]
+    if distro:
+        command.extend(["-d", distro])
+    command.extend(["bash", "-lc", interactive_script])
+    return command
 
 
 def build_open_plan(
@@ -704,12 +787,12 @@ def build_open_plan(
     if report.os_name == "Windows":
         if report.wsl_root_in_env:
             shell_command = interactive_wsl_conda_root_command()
-            command = wsl_terminal_command(shell_command)
+            command = wsl_terminal_command(shell_command, report.wsl_distribution_name)
             messages.append(f"Opening ROOT in a new interactive WSL terminal using {ENV_NAME}.")
             return OpenPlan("Windows / WSL", messages, command, shell_command, True)
         if report.wsl_root_available:
             shell_command = "root"
-            command = wsl_terminal_command(shell_command)
+            command = wsl_terminal_command(shell_command, report.wsl_distribution_name)
             messages.append("Opening the existing ROOT command in a new interactive WSL terminal.")
             return OpenPlan("Windows / WSL", messages, command, shell_command, True)
         messages.append("ROOT is not available in WSL yet.")
@@ -829,10 +912,6 @@ def shell_command(script: str) -> Command:
     return ["bash", "-lc", script]
 
 
-def wsl_shell_command(script: str) -> Command:
-    return ["wsl", "bash", "-lc", script]
-
-
 def powershell_single_quote(text: str) -> str:
     return text.replace("'", "''")
 
@@ -894,14 +973,120 @@ def miniforge_install_script(installer_name: str) -> str:
     )
 
 
-def build_miniforge_steps(os_name: str, machine: str | None = None, *, inside_wsl: bool = False) -> list[CommandStep]:
+def wsl_miniforge_environment_script(installer_name: str = MINIFORGE_LINUX_INSTALLER, distro: str = "") -> str:
+    distro_label = distro or "default"
+    distro_label = distro_label.replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        f'echo "Selected WSL distro: {distro_label}"; '
+        'WHOAMI_RESULT="$(whoami 2>/dev/null || true)"; '
+        'ID_UN_RESULT="$(id -un 2>/dev/null || true)"; '
+        'PWD_RESULT="$(pwd 2>/dev/null || true)"; '
+        'USER_NAME="${WHOAMI_RESULT:-$ID_UN_RESULT}"; '
+        'HOME_DIR="$HOME"; '
+        'if [ -z "$HOME_DIR" ] && [ -n "$USER_NAME" ]; then HOME_DIR="$(getent passwd "$USER_NAME" 2>/dev/null | cut -d: -f6)"; fi; '
+        'TARGET="${HOME_DIR}/miniforge3"; '
+        'DOWNLOAD_DIR="${HOME_DIR}/.rootbu"; '
+        f'INSTALLER="${{DOWNLOAD_DIR}}/{installer_name}"; '
+        'echo "whoami: ${WHOAMI_RESULT:-not available}"; '
+        'echo "id -un: ${ID_UN_RESULT:-not available}"; '
+        'echo "HOME: ${HOME:-not set}"; '
+        'echo "pwd: ${PWD_RESULT:-not available}"; '
+        'echo "Resolved WSL user: ${USER_NAME:-not available}"; '
+        'echo "Miniforge target: ${TARGET:-not available}"; '
+        'if [ -z "$USER_NAME" ]; then echo "ERROR: Could not determine WSL user from whoami or id -un."; exit 20; fi; '
+        'test -n "$HOME_DIR" || { echo "ERROR: WSL HOME is empty and getent passwd did not return a home directory."; exit 21; }; '
+        'test -n "$TARGET" || { echo "ERROR: Miniforge target is empty inside WSL."; exit 22; }; '
+        'if [ "$TARGET" = "/miniforge3" ]; then echo "ERROR: Miniforge target is empty inside WSL."; exit 22; fi; '
+        'echo "WSL user: $USER_NAME"; '
+        'echo "WSL HOME: $HOME_DIR"; '
+        'echo "Miniforge target: $TARGET"; '
+    )
+
+
+def wsl_miniforge_preflight_checks() -> str:
+    return (
+        'if ! command -v curl >/dev/null 2>&1; then '
+        'echo "ERROR: curl is not available inside WSL. Open Ubuntu, install curl, then rerun Check System."; exit 23; '
+        'fi; '
+        'if [ -e "$TARGET" ]; then echo "Install target already exists: $TARGET"; exit 10; fi; '
+        'if command -v df >/dev/null 2>&1; then '
+        'AVAILABLE_KB="$(df -Pk "$HOME_DIR" 2>/dev/null | awk \'NR==2 {print $4}\')"; '
+        'case "$AVAILABLE_KB" in '
+        '""|*[!0-9]*) echo "WSL available disk (KB): unknown";; '
+        '*) echo "WSL available disk (KB): $AVAILABLE_KB"; '
+        'if [ "$AVAILABLE_KB" -lt 900000 ]; then echo "ERROR: Not enough disk space inside WSL for Miniforge. About 900 MB is recommended."; exit 24; fi;; '
+        'esac; '
+        'fi; '
+    )
+
+
+def wsl_miniforge_preflight_script(installer_name: str = MINIFORGE_LINUX_INSTALLER, distro: str = "") -> str:
+    return (
+        'set -e; '
+        + wsl_miniforge_environment_script(installer_name, distro)
+        + wsl_miniforge_preflight_checks()
+        + 'echo "WSL Miniforge preflight check passed."'
+    )
+
+
+def wsl_miniforge_download_script(url: str, installer_name: str, distro: str = "") -> str:
+    return (
+        'set -e; '
+        + wsl_miniforge_environment_script(installer_name, distro)
+        + wsl_miniforge_preflight_checks()
+        + 'mkdir -p "$DOWNLOAD_DIR"; '
+        + 'echo "Downloading Miniforge..."; '
+        + f'curl -fsSLo "$INSTALLER" "{url}"; '
+        + 'if [ ! -s "$INSTALLER" ]; then echo "ERROR: Miniforge installer download is missing or empty: $INSTALLER"; exit 25; fi; '
+        + 'echo "Miniforge installer downloaded: $INSTALLER"'
+    )
+
+
+def wsl_miniforge_install_script(installer_name: str, distro: str = "") -> str:
+    return (
+        'set -e; '
+        + wsl_miniforge_environment_script(installer_name, distro)
+        + wsl_miniforge_preflight_checks()
+        + 'if [ ! -s "$INSTALLER" ]; then echo "ERROR: Miniforge installer was not found or is empty: $INSTALLER"; exit 25; fi; '
+        + 'echo "Installing Miniforge..."; '
+        + 'bash "$INSTALLER" -b -p "$TARGET"'
+    )
+
+
+def build_miniforge_steps(
+    os_name: str,
+    machine: str | None = None,
+    *,
+    inside_wsl: bool = False,
+    distro: str = "",
+) -> list[CommandStep]:
     installer_name = miniforge_installer_name("Linux" if inside_wsl else os_name, machine)
     url = miniforge_url("Linux" if inside_wsl else os_name, machine)
-    command_builder = wsl_shell_command if inside_wsl else shell_command
+    if inside_wsl:
+        return [
+            CommandStep(
+                "Checking WSL Miniforge prerequisites...",
+                wsl_shell_command(wsl_miniforge_preflight_script(installer_name, distro), distro),
+            ),
+            CommandStep(
+                "Downloading Miniforge...",
+                wsl_shell_command(wsl_miniforge_download_script(url, installer_name, distro), distro),
+            ),
+            CommandStep(
+                "Installing Miniforge...",
+                wsl_shell_command(wsl_miniforge_install_script(installer_name, distro), distro),
+            ),
+        ]
+
+    command_builder = shell_command
     return [
         CommandStep("Downloading Miniforge...", command_builder(miniforge_download_script(url, installer_name))),
         CommandStep("Installing Miniforge...", command_builder(miniforge_install_script(installer_name))),
     ]
+
+
+def wsl_miniforge_manual_commands(distro: str = "") -> list[str]:
+    return [command_to_text(step.command) for step in build_miniforge_steps("Linux", inside_wsl=True, distro=distro)]
 
 
 def build_prerequisite_plan(
@@ -957,6 +1142,7 @@ def build_prerequisite_plan(
             )
 
         if not report.wsl_conda_available:
+            miniforge_steps = build_miniforge_steps("Linux", inside_wsl=True, distro=report.wsl_distribution_name)
             return PrerequisitePlan(
                 context="Windows / WSL",
                 title="Install Miniforge inside WSL",
@@ -970,8 +1156,8 @@ def build_prerequisite_plan(
                     "ROOTBU will stop if ~/miniforge3 already exists.",
                     "ROOTBU will not use sudo, remove anything, or install ROOT in this step.",
                 ],
-                steps=build_miniforge_steps("Linux", inside_wsl=True),
-                manual_commands=linux_miniforge_commands(),
+                steps=miniforge_steps,
+                manual_commands=[command_to_text(step.command) for step in miniforge_steps],
             )
 
         return PrerequisitePlan(
@@ -1095,9 +1281,9 @@ def build_setup_guidance(report: SystemReport) -> SetupGuidance:
                 "WSL is available, but conda was not found inside WSL.",
                 "Use Install Prerequisites to let ROOTBU install Miniforge inside WSL after confirmation.",
                 "Recommended: Miniforge is focused on conda-forge packages.",
-                "Or run these commands manually inside WSL:",
+                "Or run these planned WSL commands manually from PowerShell:",
             ] + conda_restart_messages("WSL terminal")
-            return SetupGuidance("Next Steps", messages, linux_miniforge_commands())
+            return SetupGuidance("Next Steps", messages, wsl_miniforge_manual_commands(report.wsl_distribution_name))
 
         if report.wsl_root_in_env or report.wsl_root_available:
             return SetupGuidance("Next Steps", ["ROOT is already available in WSL. You can use Open ROOT."])
