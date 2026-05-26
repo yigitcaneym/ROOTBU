@@ -12,7 +12,18 @@ The current MVP is intentionally conservative: it checks first, shows the planne
 
 On Windows, ROOTBU uses WSL for ROOT setup. It detects native conda too, but the install flow targets conda inside WSL.
 
-## Run the App
+## Download ROOTBU
+
+Normal users can download ROOTBU from the GitHub Releases page once release assets are published.
+
+- Windows: download `ROOTBU-windows.exe` and double-click it.
+- macOS: download `ROOTBU-macos.zip`, unzip it, and open `ROOTBU.app`.
+
+The Windows `.exe` may show Microsoft Defender SmartScreen warnings because ROOTBU is unsigned. The macOS app may show Gatekeeper warnings because ROOTBU is unsigned and not notarized.
+
+ROOTBU does not bundle CERN ROOT, Miniforge, conda, WSL, Ubuntu, or any external installer. It bundles only the ROOTBU Python app and UI dependencies. ROOTBU still asks before installing prerequisites.
+
+## Run from Source
 
 ```bash
 python -m pip install -r requirements.txt
@@ -24,6 +35,18 @@ You can also launch the same app with `python root_installer.py`.
 Use **Check System** first. It logs the detected OS, WSL status, conda status, ROOT availability, and whether the `rootbu_root_env` environment already exists.
 
 If prerequisites are missing, ROOTBU prints a **Next Steps** section and enables **Install Prerequisites** when it can help. ROOTBU always shows a confirmation dialog before running anything.
+
+## Build Distributables
+
+Distributable builds are made with PyInstaller through GitHub Actions.
+
+- Manual build: run the **Build Distributables** workflow from the GitHub Actions tab.
+- Release build: push a tag such as `v0.1.0`; the workflow builds Windows and macOS artifacts and attaches them to a GitHub Release.
+- Artifacts:
+  - `ROOTBU-windows` contains `ROOTBU-windows.exe`.
+  - `ROOTBU-macos` contains `ROOTBU-macos.zip`.
+
+For release steps and smoke testing notes, see [RELEASE.md](RELEASE.md).
 
 ## If Conda Is Missing
 

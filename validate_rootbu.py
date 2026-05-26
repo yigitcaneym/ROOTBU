@@ -17,6 +17,9 @@ PYTHON_FILES = [
     PROJECT_ROOT / "validate_rootbu.py",
 ]
 LICENSE_FILE = PROJECT_ROOT / "LICENSE"
+BUILD_REQUIREMENTS_FILE = PROJECT_ROOT / "requirements-build.txt"
+RELEASE_FILE = PROJECT_ROOT / "RELEASE.md"
+BUILD_WORKFLOW_FILE = PROJECT_ROOT / ".github" / "workflows" / "build-distributables.yml"
 APP_FILES = [
     PROJECT_ROOT / "main.py",
     PROJECT_ROOT / "installer.py",
@@ -568,6 +571,45 @@ def assert_attribution_and_license() -> None:
     assert "Copyright (c) 2026 Yiğitcan Koç" in license_text
 
 
+def assert_distributable_build_files() -> None:
+    build_requirements = BUILD_REQUIREMENTS_FILE.read_text(encoding="utf-8")
+    workflow = BUILD_WORKFLOW_FILE.read_text(encoding="utf-8")
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    release = RELEASE_FILE.read_text(encoding="utf-8")
+
+    assert "pyinstaller" in build_requirements.lower()
+
+    assert "workflow_dispatch" in workflow
+    assert "windows-latest" in workflow
+    assert "macos-latest" in workflow
+    assert "pyinstaller --noconfirm --clean --windowed" in workflow
+    assert "--onefile --name ROOTBU" in workflow
+    assert "--collect-all customtkinter" in workflow
+    assert "--hidden-import darkdetect" in workflow
+    assert "ROOTBU-windows.exe" in workflow
+    assert "ROOTBU-macos.zip" in workflow
+    assert "actions/upload-artifact@v4" in workflow
+    assert "actions/download-artifact@v4" in workflow
+    assert "gh release create" in workflow
+    assert "gh release upload" in workflow
+    assert "refs/tags/v" in workflow
+
+    assert "## Download ROOTBU" in readme
+    assert "ROOTBU-windows.exe" in readme
+    assert "ROOTBU-macos.zip" in readme
+    assert "SmartScreen" in readme
+    assert "Gatekeeper" in readme
+    assert "does not bundle CERN ROOT, Miniforge, conda, WSL, Ubuntu, or any external installer" in readme
+    assert "Build Distributables" in readme
+    assert "RELEASE.md" in readme
+
+    assert "ROOTBU Release Checklist" in release
+    assert "Build Distributables" in release
+    assert "workflow_dispatch" in release
+    assert "v0.1.0" in release
+    assert "unsigned" in release
+
+
 def main() -> None:
     parse_python_files()
     assert_safe_environment_name()
@@ -585,6 +627,7 @@ def main() -> None:
     assert_windows_wsl_without_distribution_detection()
     assert_action_states()
     assert_attribution_and_license()
+    assert_distributable_build_files()
     print("ROOTBU validation passed.")
 
 

@@ -1,0 +1,36 @@
+# ROOTBU Release Checklist
+
+Use this checklist when preparing a GitHub Release with downloadable ROOTBU builds.
+
+## Before Building
+
+- Update README or release notes if user-facing behavior changed.
+- Run validation locally:
+
+```bash
+python -B validate_rootbu.py
+python -m py_compile main.py installer.py root_installer.py rootbu_logic.py validate_rootbu.py
+```
+
+- Confirm ROOTBU still does not bundle CERN ROOT, Miniforge, conda, WSL, Ubuntu, or external installers.
+
+## Build Artifacts
+
+- Trigger the **Build Distributables** workflow manually from GitHub Actions, or push a tag such as `v0.1.0`.
+- The workflow builds:
+  - `ROOTBU-windows` containing `ROOTBU-windows.exe`
+  - `ROOTBU-macos` containing `ROOTBU-macos.zip`
+- Download both artifacts and smoke test them on clean Windows and macOS machines when possible.
+
+## GitHub Release
+
+- For a tag like `v0.1.0`, the workflow creates or updates a GitHub Release and attaches the built artifacts.
+- If you build manually with `workflow_dispatch`, create a GitHub Release manually and attach:
+  - `ROOTBU-windows.exe`
+  - `ROOTBU-macos.zip`
+
+## Known Warnings
+
+- Windows builds are unsigned and may show Microsoft Defender SmartScreen warnings.
+- macOS builds are unsigned and not notarized, so Gatekeeper may warn before opening.
+- ROOTBU still asks before installing prerequisites and does not install ROOT automatically.
