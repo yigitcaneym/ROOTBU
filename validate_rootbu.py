@@ -20,6 +20,11 @@ LICENSE_FILE = PROJECT_ROOT / "LICENSE"
 BUILD_REQUIREMENTS_FILE = PROJECT_ROOT / "requirements-build.txt"
 RELEASE_FILE = PROJECT_ROOT / "RELEASE.md"
 BUILD_WORKFLOW_FILE = PROJECT_ROOT / ".github" / "workflows" / "build-distributables.yml"
+ICON_FILES = [
+    PROJECT_ROOT / "assets" / "rootbu_icon.png",
+    PROJECT_ROOT / "assets" / "rootbu_icon.ico",
+    PROJECT_ROOT / "assets" / "rootbu_icon.icns",
+]
 APP_FILES = [
     PROJECT_ROOT / "main.py",
     PROJECT_ROOT / "installer.py",
@@ -577,6 +582,9 @@ def assert_distributable_build_files() -> None:
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     release = RELEASE_FILE.read_text(encoding="utf-8")
 
+    for icon_file in ICON_FILES:
+        assert icon_file.is_file()
+
     assert "pyinstaller" in build_requirements.lower()
 
     assert "workflow_dispatch" in workflow
@@ -586,6 +594,8 @@ def assert_distributable_build_files() -> None:
     assert "macos-latest" in workflow
     assert "pyinstaller --noconfirm --clean --windowed" in workflow
     assert "--onefile --name ROOTBU" in workflow
+    assert "--icon assets/rootbu_icon.ico" in workflow
+    assert "--icon assets/rootbu_icon.icns" in workflow
     assert "--collect-all customtkinter" in workflow
     assert "--hidden-import darkdetect" in workflow
     assert "ROOTBU-windows.exe" in workflow
@@ -607,12 +617,16 @@ def assert_distributable_build_files() -> None:
     assert "Control-click or right-click `ROOTBU.app`" in readme
     assert "does not bundle CERN ROOT, Miniforge, conda, WSL, Ubuntu, or any external installer" in readme
     assert "Build Distributables" in readme
+    assert "Distributable builds include the ROOTBU app icon" in readme
+    assert "bundled only into the ROOTBU executable/app" in readme
     assert "PR into `main` builds test artifacts without creating a GitHub Release" in readme
     assert "RELEASE.md" in readme
 
     assert "ROOTBU Release Checklist" in release
     assert "Build Distributables" in release
     assert "workflow_dispatch" in release
+    assert "Distributable builds include the ROOTBU app icon" in release
+    assert "bundled only into the ROOTBU executable/app" in release
     assert "PR into `main` for test artifacts" in release
     assert "does not create or update a GitHub Release" in release
     assert "v0.1.0" in release

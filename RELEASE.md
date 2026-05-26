@@ -20,6 +20,7 @@ python -m py_compile main.py installer.py root_installer.py rootbu_logic.py vali
 - The workflow builds:
   - `ROOTBU-windows` containing `ROOTBU-windows.exe`
   - `ROOTBU-macos` containing `ROOTBU-macos.zip`
+- Distributable builds include the ROOTBU app icon, bundled only into the ROOTBU executable/app.
 - Download both artifacts and smoke test them on clean Windows and macOS machines when possible.
 
 ## GitHub Release

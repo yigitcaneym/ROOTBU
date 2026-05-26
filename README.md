@@ -66,6 +66,7 @@ Distributable builds are made with PyInstaller through GitHub Actions.
 - Artifacts:
   - `ROOTBU-windows` contains `ROOTBU-windows.exe`.
   - `ROOTBU-macos` contains `ROOTBU-macos.zip`.
+- Distributable builds include the ROOTBU app icon, bundled only into the ROOTBU executable/app.
 
 For release steps and smoke testing notes, see [RELEASE.md](RELEASE.md).
 
