@@ -110,6 +110,12 @@ If WSL is present but conda is missing inside WSL, **Install Prerequisites** can
 - If ROOT is already installed outside ROOTBU, ROOTBU will leave it alone.
 - If installation fails, copy the failing command from the log and run it in a terminal to see the full conda error.
 
+### WSL2 virtualization errors on Windows VMs
+
+If Ubuntu installation fails with `HCS_E_HYPERV_NOT_INSTALLED`, or says WSL2 is unable to start because virtualization is not enabled, the Windows environment cannot start WSL2. Make sure Windows Virtual Machine Platform is enabled.
+
+On UTM, Parallels, VMware, or other virtual machines, WSL2 may require nested virtualization and it may not be supported or enabled. A physical Windows machine is recommended for full Windows ROOTBU testing.
+
 ## Validation
 
 The validation script checks the Python files and the safe command planning logic. It does not install ROOT.

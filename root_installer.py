@@ -20,8 +20,10 @@ from rootbu_logic import (
     clean_command_output_lines,
     collect_system_report,
     command_to_text,
+    has_wsl_virtualization_error,
     status_icon,
     windows_creation_flags,
+    wsl_virtualization_error_guidance,
 )
 
 APP_FOOTER_TEXT = "ROOTBU — Created by Yiğitcan Koç © 2026"
@@ -195,7 +197,8 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
         if self.is_wsl_distribution_plan(plan):
             return [
                 "This may require a restart",
-                "Ubuntu may ask for a Linux username/password on first launch",
+                "After installation, Ubuntu may open and ask you to create a Linux username/password",
+                "Complete Ubuntu username/password setup before returning to ROOTBU",
                 "ROOTBU will not install ROOT in this step",
                 "After Ubuntu setup finishes, reopen ROOTBU and run Check System",
             ]
@@ -252,6 +255,7 @@ class RootBUApp(ctk.CTk):
         self.task_buttons: list[ctk.CTkButton] = []
         self.prerequisite_plan = None
         self.prerequisite_button: ctk.CTkButton | None = None
+        self.last_command_output = ""
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -479,8 +483,15 @@ class RootBUApp(ctk.CTk):
             self.log(STATUS_INFO, step.label)
             exit_code = self.stream_command(step.command)
             if exit_code != 0:
+                if has_wsl_virtualization_error(self.last_command_output):
+                    self.log_wsl_virtualization_error()
+                    return
                 self.log(STATUS_ERROR, f"Command exited with code {exit_code}.", decorate=True)
                 return
+
+        if plan.summary_command == "wsl --install -d Ubuntu":
+            self.verify_wsl_distribution_after_install()
+            return
 
         self.log(STATUS_OK, "Finished prerequisite installation.", decorate=True)
         if plan.summary_command == "wsl --install":
@@ -488,13 +499,26 @@ class RootBUApp(ctk.CTk):
                 STATUS_INFO,
                 "WSL installation may require a restart. Please restart Windows if prompted, then reopen ROOTBU and run Check System.",
             )
-        if plan.summary_command == "wsl --install -d Ubuntu":
-            self.log(
-                STATUS_INFO,
-                "Ubuntu setup may require a restart or first-run username/password setup. Finish Ubuntu setup, then reopen ROOTBU and run Check System.",
-            )
         self.log(STATUS_INFO, "Refreshing Check System after prerequisite installation.")
         self.refresh_system_state()
+
+    def verify_wsl_distribution_after_install(self):
+        self.log(STATUS_INFO, "Checking for installed WSL distributions after Ubuntu setup.")
+        report = self.refresh_system_state()
+        if report.wsl_distribution_available:
+            self.log(STATUS_OK, "Ubuntu distribution was detected. Continue with the next prerequisite step.", decorate=True)
+            return
+
+        self.log(STATUS_WARN, "Ubuntu distribution installation has not completed yet.", decorate=True)
+        self.log(
+            STATUS_INFO,
+            "Open Ubuntu from the Start menu or run `wsl -d Ubuntu`, finish the Linux username/password setup, then reopen ROOTBU and run Check System.",
+        )
+        self.log(STATUS_INFO, "If Windows asked for a restart, restart Windows first.")
+
+    def log_wsl_virtualization_error(self) -> None:
+        for index, message in enumerate(wsl_virtualization_error_guidance()):
+            self.log(STATUS_ERROR if index == 0 else STATUS_INFO, message, decorate=index == 0)
 
     def _install_root_task(self):
         report = collect_system_report()
@@ -712,6 +736,7 @@ class RootBUApp(ctk.CTk):
 
     def stream_command(self, command: list[str]) -> int:
         self.log(STATUS_INFO, f"Running: {command_to_text(command)}")
+        output_lines: list[str] = []
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -725,9 +750,12 @@ class RootBUApp(ctk.CTk):
             for line in process.stdout:
                 clean = line.rstrip()
                 if clean:
+                    output_lines.append(clean)
                     self.log(STATUS_INFO, clean, decorate=False)
 
-        return process.wait()
+        exit_code = process.wait()
+        self.last_command_output = "\n".join(output_lines)
+        return exit_code
 
 
 def main() -> None:

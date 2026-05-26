@@ -45,6 +45,13 @@ CONDENSED_PROGRESS_PREFIXES = (
     "solving environment",
     "downloading and extracting packages",
 )
+WSL_VIRTUALIZATION_ERROR_PATTERNS = (
+    "wsl2 is unable to start since virtualization is not enabled",
+    "hcs_e_hyperv_not_installed",
+    "virtual machine platform",
+    "virtualization is turned on",
+    "createvm",
+)
 
 Command = list[str]
 
@@ -198,19 +205,29 @@ def command_to_text(command: Iterable[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
 
+def home_dir_text() -> str:
+    return os.environ.get("HOME") or os.path.expanduser("~")
+
+
 def home_dir() -> Path:
-    return Path(os.path.expanduser("~"))
+    return Path(home_dir_text())
 
 
 def native_miniforge_dir() -> Path:
     return home_dir() / "miniforge3"
 
 
-def native_miniforge_conda_path(os_name: str | None = None) -> Path:
+def command_home_path(os_name: str, *parts: str) -> str:
+    if os_name == "Windows":
+        return str(PureWindowsPath(home_dir_text(), *parts))
+    return str(PurePosixPath(home_dir_text(), *parts))
+
+
+def native_miniforge_conda_path(os_name: str | None = None) -> str:
     system = os_name or platform.system()
     if system == "Windows":
-        return native_miniforge_dir() / "Scripts" / "conda.exe"
-    return native_miniforge_dir() / "bin" / "conda"
+        return command_home_path(system, "miniforge3", "Scripts", "conda.exe")
+    return command_home_path(system, "miniforge3", "bin", "conda")
 
 
 def status_icon(level: str) -> str:
@@ -254,6 +271,20 @@ def clean_command_output_lines(text: str) -> list[str]:
         lines.append(visible)
 
     return lines
+
+
+def has_wsl_virtualization_error(output: str) -> bool:
+    lowered = output.lower()
+    return any(pattern in lowered for pattern in WSL_VIRTUALIZATION_ERROR_PATTERNS)
+
+
+def wsl_virtualization_error_guidance() -> list[str]:
+    return [
+        "WSL2 could not start because virtualization / Virtual Machine Platform is not available in this Windows environment.",
+        "On a physical Windows PC: enable virtualization in BIOS/UEFI and make sure Windows Virtual Machine Platform is enabled.",
+        "In a virtual machine such as UTM/Parallels/VMware: WSL2 may require nested virtualization, and it may not be supported or enabled.",
+        "Try the same ROOTBU flow on a physical Windows machine if WSL2 cannot start inside the VM.",
+    ]
 
 
 def first_output_line(output: str) -> str:
@@ -335,33 +366,32 @@ def parse_conda_env_names(output: str) -> set[str]:
 
 def conda_candidates(os_name: str | None = None) -> list[Command]:
     system = os_name or platform.system()
-    home = home_dir()
     candidates: list[Command] = []
     path_conda = shutil.which("conda")
     if path_conda:
         candidates.append([path_conda])
 
-    candidates.append([str(native_miniforge_conda_path(system))])
+    candidates.append([native_miniforge_conda_path(system)])
 
     if system == "Windows":
         known_paths = [
-            home / "miniconda3" / "Scripts" / "conda.exe",
-            home / "miniconda3" / "condabin" / "conda.bat",
-            home / "anaconda3" / "Scripts" / "conda.exe",
-            home / "anaconda3" / "condabin" / "conda.bat",
-            home / "miniforge3" / "condabin" / "conda.bat",
-            home / "mambaforge" / "Scripts" / "conda.exe",
+            command_home_path(system, "miniconda3", "Scripts", "conda.exe"),
+            command_home_path(system, "miniconda3", "condabin", "conda.bat"),
+            command_home_path(system, "anaconda3", "Scripts", "conda.exe"),
+            command_home_path(system, "anaconda3", "condabin", "conda.bat"),
+            command_home_path(system, "miniforge3", "condabin", "conda.bat"),
+            command_home_path(system, "mambaforge", "Scripts", "conda.exe"),
         ]
     else:
         known_paths = [
-            home / "miniconda3" / "bin" / "conda",
-            home / "anaconda3" / "bin" / "conda",
-            home / "miniforge3" / "bin" / "conda",
-            home / "mambaforge" / "bin" / "conda",
+            command_home_path(system, "miniconda3", "bin", "conda"),
+            command_home_path(system, "anaconda3", "bin", "conda"),
+            command_home_path(system, "miniforge3", "bin", "conda"),
+            command_home_path(system, "mambaforge", "bin", "conda"),
         ]
 
     for path in known_paths:
-        candidates.append([str(path)])
+        candidates.append([path])
 
     unique: list[Command] = []
     seen: set[str] = set()

@@ -303,6 +303,31 @@ def assert_log_formatting() -> None:
     assert "decorate=False" in source
 
 
+def assert_wsl_virtualization_error_detection() -> None:
+    messages = [
+        "WSL2 is unable to start since virtualization is not enabled on this machine.",
+        "Please ensure the Virtual Machine Platform optional component is enabled.",
+        "virtualization is turned on in your computer's firmware settings.",
+        "Error code: Wsl/InstallDistro/Service/RegisterDistro/CreateVm/HCS/HCS_E_HYPERV_NOT_INSTALLED",
+    ]
+    for message in messages:
+        assert logic.has_wsl_virtualization_error(message)
+
+    guidance = "\n".join(logic.wsl_virtualization_error_guidance())
+    assert "Virtual Machine Platform" in guidance
+    assert "UTM/Parallels/VMware" in guidance
+    assert "physical Windows machine" in guidance
+
+
+def assert_wsl_distribution_post_install_ui() -> None:
+    source = (PROJECT_ROOT / "root_installer.py").read_text(encoding="utf-8")
+    assert "verify_wsl_distribution_after_install" in source
+    assert "Ubuntu distribution installation has not completed yet." in source
+    assert "wsl -d Ubuntu" in source
+    assert "If Windows asked for a restart, restart Windows first." in source
+    assert "has_wsl_virtualization_error" in source
+
+
 def assert_posix_conda_paths_are_platform_neutral() -> None:
     examples = {
         "/Users/example/miniforge3/bin/conda": "/Users/example/miniforge3/bin/activate",
@@ -375,26 +400,49 @@ def assert_interactive_open_plans() -> None:
 
 def assert_immediate_miniforge_detection() -> None:
     original_home = os.environ.get("HOME")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        os.environ["HOME"] = tmpdir
-        expected_conda = str(Path(tmpdir) / "miniforge3" / "bin" / "conda")
+    original_which = logic.shutil.which
 
-        def runner(command: list[str], _timeout: int) -> logic.ProbeResult:
-            if command == [expected_conda, "--version"]:
+    def fake_which(_name: str) -> str | None:
+        return None
+
+    logic.shutil.which = fake_which
+    try:
+        os.environ["HOME"] = "/tmp/rootbu-home"
+        expected_posix_conda = "/tmp/rootbu-home/miniforge3/bin/conda"
+
+        def posix_runner(command: list[str], _timeout: int) -> logic.ProbeResult:
+            if command == [expected_posix_conda, "--version"]:
                 return logic.ProbeResult(0, "conda 26.3.2")
-            if command == [expected_conda, "env", "list"]:
+            if command == [expected_posix_conda, "env", "list"]:
                 return logic.ProbeResult(0, "# conda environments:\nbase  *  /tmp/miniforge3\n")
             return logic.ProbeResult(127, "")
 
-        report = logic.collect_system_report(runner=runner, os_name="Darwin")
-        assert report.native_conda == [expected_conda]
-        assert report.native_conda_detail == "conda 26.3.2"
-        assert any(item.name == "Conda (native)" and item.status == logic.STATUS_OK for item in report.checks)
+        posix_report = logic.collect_system_report(runner=posix_runner, os_name="Darwin")
+        assert posix_report.native_conda == [expected_posix_conda]
+        assert posix_report.native_conda_detail == "conda 26.3.2"
+        assert any(item.name == "Conda (native)" and item.status == logic.STATUS_OK for item in posix_report.checks)
 
-    if original_home is None:
-        os.environ.pop("HOME", None)
-    else:
-        os.environ["HOME"] = original_home
+        windows_home = r"C:\Users\RootBU"
+        os.environ["HOME"] = windows_home
+        expected_windows_conda = logic.command_home_path("Windows", "miniforge3", "Scripts", "conda.exe")
+
+        def windows_runner(command: list[str], _timeout: int) -> logic.ProbeResult:
+            if command == [expected_windows_conda, "--version"]:
+                return logic.ProbeResult(0, "conda 26.3.2")
+            if command == [expected_windows_conda, "env", "list"]:
+                return logic.ProbeResult(0, "# conda environments:\nbase  *  C:\\Users\\RootBU\\miniforge3\n")
+            return logic.ProbeResult(127, "")
+
+        windows_report = logic.collect_system_report(runner=windows_runner, os_name="Windows")
+        assert windows_report.native_conda == [expected_windows_conda]
+        assert windows_report.native_conda_detail == "conda 26.3.2"
+        assert any(item.name == "Conda (native)" and item.status == logic.STATUS_OK for item in windows_report.checks)
+    finally:
+        logic.shutil.which = original_which
+        if original_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = original_home
 
 
 def assert_windows_wsl_without_distribution_detection() -> None:
@@ -529,6 +577,8 @@ def main() -> None:
     assert_prerequisite_plans()
     assert_prerequisite_dialog_ui()
     assert_log_formatting()
+    assert_wsl_virtualization_error_detection()
+    assert_wsl_distribution_post_install_ui()
     assert_posix_conda_paths_are_platform_neutral()
     assert_interactive_open_plans()
     assert_immediate_miniforge_detection()
