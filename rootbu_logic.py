@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 from dataclasses import dataclass, field
 import os
 import platform
@@ -120,6 +121,9 @@ class PrerequisitePlan:
     install_name: str = ""
     install_location: str = ""
     download_url: str = ""
+    summary_command: str = ""
+    requires_admin: bool = False
+    opens_elevated: bool = False
     steps: list[CommandStep] = field(default_factory=list)
     manual_commands: list[str] = field(default_factory=list)
 
@@ -158,6 +162,15 @@ Runner = Callable[[Command, int], ProbeResult]
 
 def windows_creation_flags() -> int:
     return subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+
+
+def is_windows_admin() -> bool:
+    if platform.system() != "Windows":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
 
 
 def run_probe(command: Command, timeout: int = 12) -> ProbeResult:
@@ -422,7 +435,7 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
             report.checks.append(CheckItem("WSL", STATUS_OK, "WSL command is available."))
         else:
             report.checks.append(
-                CheckItem("WSL", STATUS_WARN, "WSL was not detected. ROOTBU will not run wsl --install automatically.")
+                CheckItem("WSL", STATUS_WARN, "WSL was not detected. ROOTBU can run wsl --install after confirmation.")
             )
     else:
         report.checks.append(CheckItem("WSL", STATUS_INFO, f"Not required on {os_name}."))
@@ -487,9 +500,9 @@ def build_install_plan(report: SystemReport) -> InstallPlan:
     ]
 
     if report.os_name == "Windows":
-        messages.append("Windows installs are handled through WSL. ROOTBU will not run wsl --install.")
+        messages.append("Windows installs are handled through WSL. Use Install Prerequisites first if WSL is missing.")
         if not report.wsl_available:
-            messages.append("Install WSL manually first, then run Check System again.")
+            messages.append("Install WSL first, then run Check System again.")
             return InstallPlan("Windows / WSL", messages, [])
         if not report.wsl_conda_available:
             messages.append("Install Miniforge or Miniconda inside WSL first, then run Check System again.")
@@ -742,6 +755,33 @@ def wsl_shell_command(script: str) -> Command:
     return ["wsl", "bash", "-lc", script]
 
 
+def powershell_single_quote(text: str) -> str:
+    return text.replace("'", "''")
+
+
+def elevated_wsl_install_command() -> Command:
+    admin_command = (
+        "wsl --install; "
+        'Write-Host ""; '
+        'Write-Host "WSL installation may require a restart. Please restart Windows if prompted, then reopen ROOTBU and run Check System."; '
+        'Read-Host "Press Enter to close this window"'
+    )
+    script = (
+        "$ErrorActionPreference = 'Stop'; "
+        f"$adminCommand = '{powershell_single_quote(admin_command)}'; "
+        "$process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru "
+        "-ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $adminCommand); "
+        "exit $process.ExitCode"
+    )
+    return ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]
+
+
+def build_wsl_install_steps(*, windows_is_admin: bool) -> list[CommandStep]:
+    if windows_is_admin:
+        return [CommandStep("Installing WSL...", ["wsl", "--install"])]
+    return [CommandStep("Opening elevated PowerShell for WSL installation...", elevated_wsl_install_command())]
+
+
 def miniforge_download_script(url: str, installer_name: str) -> str:
     return (
         'set -e; '
@@ -778,21 +818,28 @@ def build_prerequisite_plan(
     *,
     machine: str | None = None,
     native_miniforge_exists: bool | None = None,
+    windows_is_admin: bool | None = None,
 ) -> PrerequisitePlan:
     if report.os_name == "Windows":
         if not report.wsl_available:
+            admin = is_windows_admin() if windows_is_admin is None else windows_is_admin
             return PrerequisitePlan(
                 context="Windows / WSL",
-                title="WSL setup is required",
+                title="Install WSL",
                 needed=True,
-                install_name="WSL",
+                install_name="Windows Subsystem for Linux (WSL)",
                 install_location="Windows system feature",
+                summary_command="wsl --install",
+                requires_admin=True,
+                opens_elevated=not admin,
                 messages=[
                     "ROOTBU expects WSL for the ROOT setup flow on Windows.",
-                    "WSL installation may require Administrator PowerShell and a Windows restart.",
-                    "ROOTBU will not run wsl --install automatically because it is a system-level Windows change.",
-                    "Copy this command into Administrator PowerShell if you want to install WSL manually.",
+                    "ROOTBU can run wsl --install after confirmation.",
+                    "WSL installation may require Administrator permission and a Windows restart.",
+                    "ROOTBU will not install ROOT in this step.",
+                    "After restart, open ROOTBU again and run Check System.",
                 ],
+                steps=build_wsl_install_steps(windows_is_admin=admin),
                 manual_commands=["wsl --install"],
             )
 
@@ -885,7 +932,7 @@ def native_conda_missing_guidance(report: SystemReport) -> SetupGuidance:
         messages = [
             "Conda was not found. ROOTBU cannot install ROOT yet.",
             "Recommended: install Miniforge because it is focused on conda-forge packages.",
-            "Use Install Missing Prerequisites to let ROOTBU download and install Miniforge after confirmation.",
+            "Use Install Prerequisites to let ROOTBU download and install Miniforge after confirmation.",
             "Or open Terminal and run these commands manually:",
         ] + conda_restart_messages("terminal")
         return SetupGuidance("Next Steps", messages, macos_miniforge_commands())
@@ -894,7 +941,7 @@ def native_conda_missing_guidance(report: SystemReport) -> SetupGuidance:
         messages = [
             "Conda was not found. ROOTBU cannot install ROOT yet.",
             "Recommended: install Miniforge because it is focused on conda-forge packages.",
-            "Use Install Missing Prerequisites to let ROOTBU download and install Miniforge after confirmation.",
+            "Use Install Prerequisites to let ROOTBU download and install Miniforge after confirmation.",
             "Or open a terminal and run these commands manually:",
         ] + conda_restart_messages("terminal")
         return SetupGuidance("Next Steps", messages, linux_miniforge_commands())
@@ -909,9 +956,10 @@ def build_setup_guidance(report: SystemReport) -> SetupGuidance:
                 "Next Steps",
                 [
                     "ROOTBU expects WSL for the ROOT setup flow on Windows.",
-                    "WSL was not detected. Open PowerShell as Administrator and run this command:",
-                    "Restart Windows if the WSL installer asks you to, then open ROOTBU and run Check System again.",
-                    "ROOTBU will not run wsl --install automatically.",
+                    "WSL was not detected. Use Install Prerequisites to run wsl --install after confirmation.",
+                    "The WSL installer may ask for Administrator permission and a Windows restart.",
+                    "You can also run this command manually in Administrator PowerShell:",
+                    "After restart, open ROOTBU again and run Check System.",
                 ],
                 ["wsl --install"],
             )
@@ -919,7 +967,7 @@ def build_setup_guidance(report: SystemReport) -> SetupGuidance:
         if not report.wsl_conda_available:
             messages = [
                 "WSL is available, but conda was not found inside WSL.",
-                "Use Install Missing Prerequisites to let ROOTBU install Miniforge inside WSL after confirmation.",
+                "Use Install Prerequisites to let ROOTBU install Miniforge inside WSL after confirmation.",
                 "Recommended: Miniforge is focused on conda-forge packages.",
                 "Or run these commands manually inside WSL:",
             ] + conda_restart_messages("WSL terminal")

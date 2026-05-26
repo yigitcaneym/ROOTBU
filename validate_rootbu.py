@@ -68,7 +68,7 @@ def assert_install_plans() -> None:
     )
     windows_plan = logic.build_install_plan(windows_without_wsl)
     assert windows_plan.commands == []
-    assert any("will not run wsl --install" in message for message in windows_plan.messages)
+    assert any("Use Install Prerequisites" in message for message in windows_plan.messages)
 
 
 def assert_setup_guidance() -> None:
@@ -92,6 +92,8 @@ def assert_setup_guidance() -> None:
     windows_guidance = logic.build_setup_guidance(windows_without_wsl)
     assert windows_guidance.commands == ["wsl --install"]
     assert any("Administrator" in message for message in windows_guidance.messages)
+    assert any("Install Prerequisites" in message for message in windows_guidance.messages)
+    assert not any("will not run wsl --install automatically" in message for message in windows_guidance.messages)
 
     windows_without_wsl_conda = logic.SystemReport(
         os_name="Windows",
@@ -191,10 +193,23 @@ def assert_prerequisite_plans() -> None:
     assert_no_destructive_prerequisite_commands(linux_plan)
 
     windows_without_wsl = logic.SystemReport(os_name="Windows", platform_label="Windows-test")
-    windows_plan = logic.build_prerequisite_plan(windows_without_wsl)
+    windows_plan = logic.build_prerequisite_plan(windows_without_wsl, windows_is_admin=False)
+    windows_text = "\n".join(command_texts(windows_plan))
     assert windows_plan.needed
-    assert not windows_plan.can_run
+    assert windows_plan.can_run
+    assert windows_plan.requires_admin
+    assert windows_plan.opens_elevated
+    assert windows_plan.summary_command == "wsl --install"
     assert windows_plan.manual_commands == ["wsl --install"]
+    assert "Start-Process" in windows_text
+    assert "wsl --install" in windows_text
+    assert_no_destructive_prerequisite_commands(windows_plan)
+
+    windows_admin_plan = logic.build_prerequisite_plan(windows_without_wsl, windows_is_admin=True)
+    assert windows_admin_plan.needed
+    assert windows_admin_plan.can_run
+    assert not windows_admin_plan.opens_elevated
+    assert command_texts(windows_admin_plan) == ["wsl --install"]
 
     windows_without_wsl_conda = logic.SystemReport(
         os_name="Windows",
@@ -216,8 +231,10 @@ def assert_prerequisite_dialog_ui() -> None:
     assert "class PrerequisiteConfirmationDialog" in source
     assert 'self.title("Install Missing Prerequisite")' in source
     assert 'text="Install Prerequisites"' in source
-    assert 'text="Copy Commands"' in source
-    assert 'text="Install Miniforge"' in source
+    assert '"Copy Commands"' in source
+    assert '"Copy Command"' in source
+    assert '"Install Miniforge"' in source
+    assert '"Install WSL"' in source
     assert "messagebox.askyesno(\"Confirm prerequisite installation\"" not in source
 
 
@@ -337,6 +354,13 @@ def assert_action_states() -> None:
         assert missing_state.install_prerequisites_enabled
         assert not missing_state.install_root_enabled
         assert not missing_state.open_root_enabled
+
+        missing_wsl = logic.SystemReport(os_name="Windows", platform_label="Windows-test", wsl_available=False)
+        missing_wsl_state = logic.build_action_state(missing_wsl)
+        assert missing_wsl_state.install_prerequisites_enabled
+        assert missing_wsl_state.install_prerequisites_label == "Install Prerequisites"
+        assert not missing_wsl_state.install_root_enabled
+        assert not missing_wsl_state.open_root_enabled
 
         conda_no_root = logic.SystemReport(
             os_name="Darwin",

@@ -64,9 +64,8 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
         summary = ctk.CTkFrame(self)
         summary.grid(row=1, column=0, padx=22, pady=(0, 12), sticky="ew")
         summary.grid_columnconfigure(1, weight=1)
-        self._add_summary_row(summary, 0, "Missing prerequisite", "Conda / Miniforge")
-        self._add_summary_row(summary, 1, "Target location", plan.install_location or "~/miniforge3")
-        self._add_summary_row(summary, 2, "Platform", platform_label)
+        for row_index, (label_text, value_text) in enumerate(self.summary_rows(plan, platform_label)):
+            self._add_summary_row(summary, row_index, label_text, value_text)
 
         safety = ctk.CTkFrame(self)
         safety.grid(row=2, column=0, padx=22, pady=(0, 12), sticky="ew")
@@ -78,13 +77,7 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
             anchor="w",
         )
         safety_title.grid(row=0, column=0, columnspan=2, padx=14, pady=(12, 4), sticky="ew")
-        safety_points = [
-            "No sudo",
-            "No deletion",
-            "No overwrite of existing ~/miniforge3",
-            "ROOT will not be installed in this step",
-            "conda init will not be run automatically",
-        ]
+        safety_points = self.safety_points(plan)
         for index, point in enumerate(safety_points):
             label = ctk.CTkLabel(safety, text=f"- {point}", anchor="w", justify="left")
             label.grid(row=1 + index // 2, column=index % 2, padx=14, pady=2, sticky="ew")
@@ -126,7 +119,7 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
 
         copy_button = ctk.CTkButton(
             footer,
-            text="Copy Commands",
+            text="Copy Command" if self.is_wsl_plan(plan) else "Copy Commands",
             width=140,
             command=self.copy_commands,
         )
@@ -145,7 +138,7 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
 
         install_button = ctk.CTkButton(
             footer,
-            text="Install Miniforge",
+            text="Install WSL" if self.is_wsl_plan(plan) else "Install Miniforge",
             width=150,
             command=self.confirm,
         )
@@ -153,6 +146,40 @@ class PrerequisiteConfirmationDialog(ctk.CTkToplevel):
 
         self.after(100, self.lift)
         self.after(120, self.focus_force)
+
+    def is_wsl_plan(self, plan) -> bool:
+        return plan.summary_command == "wsl --install"
+
+    def summary_rows(self, plan, platform_label: str) -> list[tuple[str, str]]:
+        if self.is_wsl_plan(plan):
+            return [
+                ("Missing prerequisite", "Windows Subsystem for Linux (WSL)"),
+                ("Command", plan.summary_command),
+                ("Platform", platform_label),
+            ]
+
+        return [
+            ("Missing prerequisite", "Conda / Miniforge"),
+            ("Target location", plan.install_location or "~/miniforge3"),
+            ("Platform", platform_label),
+        ]
+
+    def safety_points(self, plan) -> list[str]:
+        if self.is_wsl_plan(plan):
+            return [
+                "This may require Administrator permission",
+                "This may require a Windows restart",
+                "ROOTBU will not install ROOT in this step",
+                "After restart, open ROOTBU again and run Check System",
+            ]
+
+        return [
+            "No sudo",
+            "No deletion",
+            "No overwrite of existing ~/miniforge3",
+            "ROOT will not be installed in this step",
+            "conda init will not be run automatically",
+        ]
 
     def _add_summary_row(self, parent: ctk.CTkFrame, row: int, label_text: str, value_text: str) -> None:
         label = ctk.CTkLabel(
@@ -429,6 +456,11 @@ class RootBUApp(ctk.CTk):
                 return
 
         self.log(STATUS_OK, "Finished prerequisite installation.", decorate=True)
+        if plan.summary_command == "wsl --install":
+            self.log(
+                STATUS_INFO,
+                "WSL installation may require a restart. Please restart Windows if prompted, then reopen ROOTBU and run Check System.",
+            )
         self.log(STATUS_INFO, "Refreshing Check System after prerequisite installation.")
         self.refresh_system_state()
 
@@ -573,6 +605,8 @@ class RootBUApp(ctk.CTk):
 
     def prerequisite_platform_label(self, plan) -> str:
         if plan.context == "Windows / WSL":
+            if plan.summary_command == "wsl --install":
+                return "Windows"
             return "WSL"
         if plan.context == "Linux":
             return "Linux"
