@@ -8,7 +8,7 @@ import re
 import shlex
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterable
 
 ENV_NAME = "rootbu_root_env"
@@ -546,6 +546,15 @@ def shell_quote_path(path: str) -> str:
     return shlex.quote(path)
 
 
+def pure_path_for_command(raw_path: str) -> PurePath:
+    expanded = os.path.expanduser(raw_path) if raw_path.startswith("~") else raw_path
+    if expanded.startswith("/") or expanded.startswith("$HOME/") or ("/" in expanded and "\\" not in expanded):
+        return PurePosixPath(expanded)
+    if "\\" in expanded or re.match(r"^[A-Za-z]:[\\/]", expanded):
+        return PureWindowsPath(expanded)
+    return PurePosixPath(expanded)
+
+
 def activation_script_from_conda_command(conda_command: Command | None) -> str:
     if not conda_command:
         return "$HOME/miniforge3/bin/activate"
@@ -554,7 +563,7 @@ def activation_script_from_conda_command(conda_command: Command | None) -> str:
     if raw_path == "conda" or raw_path == "conda.exe":
         return "$HOME/miniforge3/bin/activate"
 
-    path = Path(raw_path).expanduser()
+    path = pure_path_for_command(raw_path)
     parent = path.parent
     if parent.name == "condabin":
         return str(parent.parent / "bin" / "activate")

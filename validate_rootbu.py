@@ -261,6 +261,21 @@ def assert_log_formatting() -> None:
     assert "decorate=False" in source
 
 
+def assert_posix_conda_paths_are_platform_neutral() -> None:
+    examples = {
+        "/Users/example/miniforge3/bin/conda": "/Users/example/miniforge3/bin/activate",
+        "/home/example/miniforge3/bin/conda": "/home/example/miniforge3/bin/activate",
+        "$HOME/miniforge3/bin/conda": "$HOME/miniforge3/bin/activate",
+    }
+
+    for conda_path, activate_path in examples.items():
+        assert logic.activation_script_from_conda_command([conda_path]) == activate_path
+        command = logic.interactive_conda_root_command([conda_path])
+        assert command == f"source {activate_path} rootbu_root_env && root"
+        assert "\\Users\\example" not in command
+        assert "\\home\\example" not in command
+
+
 def assert_interactive_open_plans() -> None:
     mac_report = logic.SystemReport(
         os_name="Darwin",
@@ -423,6 +438,7 @@ def main() -> None:
     assert_prerequisite_plans()
     assert_prerequisite_dialog_ui()
     assert_log_formatting()
+    assert_posix_conda_paths_are_platform_neutral()
     assert_interactive_open_plans()
     assert_immediate_miniforge_detection()
     assert_action_states()
