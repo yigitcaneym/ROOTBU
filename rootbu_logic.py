@@ -1180,7 +1180,17 @@ def build_miniforge_steps(
 
 
 def wsl_miniforge_manual_commands(distro: str = "") -> list[str]:
-    return [command_to_text(step.command) for step in build_miniforge_steps("Linux", inside_wsl=True, distro=distro)]
+    # Commands to paste inside an Ubuntu (WSL) shell. We deliberately do NOT wrap
+    # them in `wsl -d <distro> bash -lc '...'`: that form uses POSIX single-quote
+    # escaping that PowerShell and cmd.exe mis-parse, so a user copying it from the
+    # ROOTBU log would get a broken command. Plain bash lines run correctly once the
+    # user opens Ubuntu.
+    installer = miniforge_installer_name("Linux")
+    url = miniforge_url("Linux")
+    return [
+        f'curl --create-dirs -fsSLo "$HOME/.rootbu/{installer}" "{url}"',
+        f'bash "$HOME/.rootbu/{installer}" -b -p "$HOME/miniforge3"',
+    ]
 
 
 def build_prerequisite_plan(
@@ -1395,7 +1405,7 @@ def build_setup_guidance(report: SystemReport) -> SetupGuidance:
                 "WSL is available, but conda was not found inside WSL.",
                 "Use Install Prerequisites to let ROOTBU install Miniforge inside WSL after confirmation.",
                 "Recommended: Miniforge is focused on conda-forge packages.",
-                "Or run these planned WSL commands manually from PowerShell:",
+                "Or open Ubuntu (WSL) and run these commands there yourself:",
             ] + conda_restart_messages("WSL terminal")
             return SetupGuidance("Next Steps", messages, wsl_miniforge_manual_commands(report.wsl_distribution_name))
 

@@ -124,8 +124,13 @@ def assert_setup_guidance() -> None:
     )
     wsl_guidance = logic.build_setup_guidance(windows_without_wsl_conda)
     assert "Miniforge3-Linux-x86_64.sh" in wsl_guidance.commands[0]
-    assert "wsl -d Ubuntu bash -lc" in wsl_guidance.commands[0]
+    # Manual WSL commands must be pasteable inside an Ubuntu shell, not wrapped in
+    # `wsl -d ... bash -lc '...'` (PowerShell/cmd mis-parse the POSIX quoting).
+    assert all("bash -lc" not in command for command in wsl_guidance.commands)
+    assert wsl_guidance.commands[0].startswith("curl")
+    assert any(command.startswith("bash ") and "miniforge3" in command for command in wsl_guidance.commands)
     assert any("inside WSL" in message for message in wsl_guidance.messages)
+    assert any("Ubuntu (WSL)" in message for message in wsl_guidance.messages)
 
     root_available_report = logic.SystemReport(
         os_name="Darwin",
