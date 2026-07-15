@@ -97,6 +97,7 @@ class SystemReport:
     wsl_distribution_available: bool = False
     wsl_distribution_detail: str = ""
     wsl_distribution_name: str = ""
+    wsl_distribution_version: int | None = None
     wsl_conda_available: bool = False
     wsl_conda_command: str = ""
     wsl_env_exists: bool = False
@@ -531,6 +532,52 @@ def check_wsl_distribution_available(runner: Runner) -> tuple[bool, str, str]:
     return False, "WSL is installed, but no Linux distribution is installed yet.", ""
 
 
+def parse_wsl_kernel_version(uname_release: str) -> int | None:
+    """Return 1 for a WSL 1 kernel, 2 for a WSL 2 kernel, or None if unknown.
+
+    WSL 1 reports a translation-layer kernel such as ``4.4.0-19041-Microsoft``.
+    WSL 2 reports a real Linux kernel such as ``5.15.167.4-microsoft-standard-WSL2``.
+    """
+    lowered = (uname_release or "").strip().lower()
+    if not lowered:
+        return None
+    if "microsoft-standard" in lowered or "wsl2" in lowered:
+        return 2
+    if "microsoft" in lowered:
+        return 1
+    return None
+
+
+def wsl_set_version_command(distro: str) -> str:
+    return f"wsl --set-version {distro or 'Ubuntu'} 2"
+
+
+def wsl_version_one_detail(distro: str) -> str:
+    name = distro or "The WSL distribution"
+    return (
+        f"{name} is running on WSL 1, which cannot run conda or ROOT reliably. "
+        "Convert it to WSL 2, then run Check System again."
+    )
+
+
+def wsl_version_one_messages(distro: str) -> list[str]:
+    name = distro or "your WSL distribution"
+    return [
+        f"{name} is installed, but it is running on WSL 1.",
+        "WSL 1 cannot run conda, Miniforge, or ROOT reliably, so ROOTBU cannot continue on WSL 1.",
+        "Convert the distribution to WSL 2, then reopen ROOTBU and run Check System.",
+        "WSL 2 needs the Virtual Machine Platform Windows feature and CPU virtualization enabled in the BIOS/UEFI.",
+        "Run these commands in Administrator PowerShell, then restart Windows if you are asked to:",
+    ]
+
+
+def wsl_version_one_commands(distro: str) -> list[str]:
+    return [
+        "dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart",
+        wsl_set_version_command(distro),
+    ]
+
+
 def wsl_shell_command(script: str, distro: str = "") -> Command:
     if distro:
         return ["wsl", "-d", distro, "bash", "-lc", script]
@@ -566,6 +613,21 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
             )
             if report.wsl_distribution_name:
                 report.checks.append(CheckItem("Selected WSL distro", STATUS_INFO, report.wsl_distribution_name))
+                uname_result = run_wsl_probe("uname -r", runner, distro=report.wsl_distribution_name)
+                if uname_result.returncode == 0:
+                    report.wsl_distribution_version = parse_wsl_kernel_version(uname_result.stdout)
+                if report.wsl_distribution_version == 1:
+                    report.checks.append(
+                        CheckItem("WSL version", STATUS_ERROR, wsl_version_one_detail(report.wsl_distribution_name))
+                    )
+                elif report.wsl_distribution_version == 2:
+                    report.checks.append(
+                        CheckItem(
+                            "WSL version",
+                            STATUS_OK,
+                            f"{report.wsl_distribution_name} is running on WSL 2.",
+                        )
+                    )
         else:
             report.checks.append(
                 CheckItem("WSL", STATUS_WARN, "WSL was not detected. ROOTBU can run wsl --install after confirmation.")
@@ -598,7 +660,12 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
     else:
         report.checks.append(CheckItem("ROOT (native)", STATUS_WARN, root_detail))
 
-    if os_name == "Windows" and report.wsl_available and report.wsl_distribution_available:
+    if (
+        os_name == "Windows"
+        and report.wsl_available
+        and report.wsl_distribution_available
+        and report.wsl_distribution_version != 1
+    ):
         distro = report.wsl_distribution_name
         wsl_conda = run_wsl_probe(wsl_conda_probe_script(), runner, distro=distro)
         report.wsl_conda_available = wsl_conda.returncode == 0
@@ -645,6 +712,9 @@ def build_install_plan(report: SystemReport) -> InstallPlan:
             return InstallPlan("Windows / WSL", messages, [])
         if not report.wsl_distribution_available:
             messages.append("Install a WSL Linux distribution first, then run Check System again.")
+            return InstallPlan("Windows / WSL", messages, [])
+        if report.wsl_distribution_version == 1:
+            messages.extend(wsl_version_one_messages(report.wsl_distribution_name))
             return InstallPlan("Windows / WSL", messages, [])
         if not report.wsl_conda_available:
             messages.append("Install Miniforge or Miniconda inside WSL first, then run Check System again.")
@@ -838,7 +908,12 @@ def build_open_plan(
 
 def conda_available_for_root_install(report: SystemReport) -> bool:
     if report.os_name == "Windows":
-        return report.wsl_available and report.wsl_distribution_available and report.wsl_conda_available
+        return (
+            report.wsl_available
+            and report.wsl_distribution_available
+            and report.wsl_distribution_version != 1
+            and report.wsl_conda_available
+        )
     return report.native_conda is not None
 
 
@@ -1141,6 +1216,19 @@ def build_prerequisite_plan(
                 manual_commands=["wsl --install -d Ubuntu"],
             )
 
+        if report.wsl_distribution_version == 1:
+            return PrerequisitePlan(
+                context="Windows / WSL",
+                title="Convert WSL to version 2",
+                needed=True,
+                install_name="WSL 2 conversion",
+                install_location=f"{report.wsl_distribution_name or 'Ubuntu'} distribution",
+                summary_command=wsl_set_version_command(report.wsl_distribution_name),
+                requires_admin=True,
+                messages=wsl_version_one_messages(report.wsl_distribution_name),
+                manual_commands=wsl_version_one_commands(report.wsl_distribution_name),
+            )
+
         if not report.wsl_conda_available:
             miniforge_steps = build_miniforge_steps("Linux", inside_wsl=True, distro=report.wsl_distribution_name)
             return PrerequisitePlan(
@@ -1274,6 +1362,13 @@ def build_setup_guidance(report: SystemReport) -> SetupGuidance:
                     "After Ubuntu setup finishes, reopen ROOTBU and run Check System.",
                 ],
                 ["wsl --install -d Ubuntu"],
+            )
+
+        if report.wsl_distribution_version == 1:
+            return SetupGuidance(
+                "Next Steps",
+                wsl_version_one_messages(report.wsl_distribution_name),
+                wsl_version_one_commands(report.wsl_distribution_name),
             )
 
         if not report.wsl_conda_available:

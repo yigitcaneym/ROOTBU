@@ -629,6 +629,83 @@ def assert_windows_wsl_uses_selected_ubuntu() -> None:
     assert all(step.command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"] for step in prerequisite_plan.steps)
 
 
+def assert_wsl_kernel_version_parser() -> None:
+    assert logic.parse_wsl_kernel_version("4.4.0-19041-Microsoft") == 1
+    assert logic.parse_wsl_kernel_version("5.15.167.4-microsoft-standard-WSL2") == 2
+    assert logic.parse_wsl_kernel_version("6.6.36.6-microsoft-standard-WSL2") == 2
+    assert logic.parse_wsl_kernel_version("") is None
+    assert logic.parse_wsl_kernel_version("6.8.0-generic") is None
+
+
+def _windows_wsl_report(uname_release: str, conda_returncode: int = 1) -> logic.SystemReport:
+    original_which = logic.shutil.which
+
+    def fake_which(name: str):
+        return r"C:\Windows\System32\wsl.exe" if name == "wsl" else None
+
+    def runner(command, _timeout):
+        if command == ["wsl", "--status"]:
+            return logic.ProbeResult(0, "Default Version: 2")
+        if command == ["wsl", "--list", "--quiet"]:
+            return logic.ProbeResult(0, "Ubuntu\n")
+        if command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"]:
+            script = command[5]
+            if script == "uname -r":
+                return logic.ProbeResult(0, uname_release + "\n")
+            if script == logic.wsl_conda_probe_script():
+                return logic.ProbeResult(conda_returncode, "")
+            return logic.ProbeResult(1, "")
+        return logic.ProbeResult(127, "")
+
+    logic.shutil.which = fake_which
+    try:
+        return logic.collect_system_report(runner=runner, os_name="Windows")
+    finally:
+        logic.shutil.which = original_which
+
+
+def assert_wsl_version_one_is_detected_and_blocks() -> None:
+    report = _windows_wsl_report("4.4.0-19041-Microsoft")
+
+    assert report.wsl_distribution_version == 1
+    assert any(item.name == "WSL version" and item.status == logic.STATUS_ERROR for item in report.checks)
+    # Under WSL 1, ROOTBU must not probe/claim conda or ROOT availability.
+    assert not report.wsl_conda_available
+    assert not report.wsl_root_available
+    assert not any(item.name == "Conda (WSL)" for item in report.checks)
+
+    guidance = logic.build_setup_guidance(report)
+    assert any("WSL 1" in message for message in guidance.messages)
+    assert any("wsl --set-version Ubuntu 2" in command for command in guidance.commands)
+
+    install_plan = logic.build_install_plan(report)
+    assert install_plan.commands == []
+    assert any("WSL 1" in message for message in install_plan.messages)
+
+    action = logic.build_action_state(report)
+    assert not action.install_root_enabled
+    assert not action.open_root_enabled
+
+    plan = logic.build_prerequisite_plan(report)
+    assert plan.needed
+    assert not plan.can_run
+    assert plan.has_manual_commands
+    assert any("set-version" in command for command in plan.manual_commands)
+    for command in plan.manual_commands:
+        assert "sudo" not in command
+        assert "rm -rf" not in command
+
+
+def assert_wsl_version_two_stays_healthy() -> None:
+    report = _windows_wsl_report("5.15.167.4-microsoft-standard-WSL2")
+
+    assert report.wsl_distribution_version == 2
+    assert not any(item.name == "WSL version" and item.status == logic.STATUS_ERROR for item in report.checks)
+    assert any(item.name == "WSL version" and item.status == logic.STATUS_OK for item in report.checks)
+    # WSL 2 with conda missing should fall back to the normal Miniforge guidance.
+    assert any("conda was not found" in message for message in logic.build_setup_guidance(report).messages)
+
+
 def assert_action_states() -> None:
     original_home = os.environ.get("HOME")
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -818,6 +895,9 @@ def main() -> None:
     assert_immediate_miniforge_detection()
     assert_windows_wsl_without_distribution_detection()
     assert_windows_wsl_uses_selected_ubuntu()
+    assert_wsl_kernel_version_parser()
+    assert_wsl_version_one_is_detected_and_blocks()
+    assert_wsl_version_two_stays_healthy()
     assert_action_states()
     assert_attribution_and_license()
     assert_distributable_build_files()
