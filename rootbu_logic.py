@@ -491,18 +491,20 @@ def check_wsl_available(runner: Runner) -> bool:
     status = runner(["wsl", "--status"], 10)
     if status.returncode == 0:
         return True
-    if "no installed distributions" in status.stdout.lower():
+    # wsl.exe emits UTF-16 output; when decoded as text it is interspersed with
+    # NUL bytes, so strip them before matching human-readable substrings.
+    if "no installed distributions" in status.stdout.replace("\x00", "").lower():
         return True
     distributions = runner(["wsl", "--list", "--quiet"], 10)
     if distributions.returncode == 0:
         return True
-    return "no installed distributions" in distributions.stdout.lower()
+    return "no installed distributions" in distributions.stdout.replace("\x00", "").lower()
 
 
 def parse_wsl_distribution_names(output: str) -> list[str]:
     names: list[str] = []
     for raw_line in output.splitlines():
-        name = raw_line.replace("\x00", "").strip().lstrip("*").strip()
+        name = raw_line.replace("\x00", "").replace("﻿", "").strip().lstrip("*").strip()
         if not name:
             continue
         lowered = name.lower()
@@ -524,7 +526,10 @@ def select_wsl_distribution_name(names: list[str]) -> str:
 
 def check_wsl_distribution_available(runner: Runner) -> tuple[bool, str, str]:
     result = runner(["wsl", "--list", "--quiet"], 10)
-    names = parse_wsl_distribution_names(result.stdout)
+    # Docker Desktop registers internal WSL distributions (docker-desktop,
+    # docker-desktop-data) that cannot host a conda/ROOT install. Ignore them so
+    # ROOTBU does not target a Docker pseudo-distro when no real Linux distro exists.
+    names = [n for n in parse_wsl_distribution_names(result.stdout) if not n.lower().startswith("docker-desktop")]
     if result.returncode == 0 and names:
         selected = select_wsl_distribution_name(names)
         return True, f"Installed distribution(s): {', '.join(names)}", selected
@@ -796,15 +801,25 @@ def interactive_conda_root_command(conda_command: Command | None) -> str:
     return f"source {shell_quote_path(activate_script)} {shlex.quote(ENV_NAME)} && root"
 
 
-def interactive_wsl_conda_root_command() -> str:
+def interactive_wsl_conda_root_command(conda_command: str = "") -> str:
     env_name = shlex.quote(ENV_NAME)
-    return (
-        'if [ -f "$HOME/miniforge3/bin/activate" ]; then '
-        f'source "$HOME/miniforge3/bin/activate" {env_name}; '
-        'else CONDA_EXE="$(command -v conda)"; '
-        f'source "$(dirname "$CONDA_EXE")/activate" {env_name}; '
-        "fi; root"
-    )
+    default_activate = "$HOME/miniforge3/bin/activate"
+    detected = ""
+    if conda_command and conda_command not in {"conda", "conda.exe"}:
+        detected = activation_script_from_conda_command([conda_command])
+
+    primary = detected or default_activate
+    lines = [f'if [ -f "{primary}" ]; then source "{primary}" {env_name}; ']
+    if detected and detected != default_activate:
+        lines.append(f'elif [ -f "{default_activate}" ]; then source "{default_activate}" {env_name}; ')
+    # Fallback: only dereference conda if it is a real path. When conda is a shell
+    # function (the normal post `conda init` state) command -v prints just "conda",
+    # so guard against turning that into a broken "./activate" path.
+    lines.append('else CONDA_EXE="$(command -v conda)"; ')
+    lines.append(f'case "$CONDA_EXE" in */*) source "$(dirname "$CONDA_EXE")/activate" {env_name} ;; ')
+    lines.append(f'*) source "{default_activate}" {env_name} ;; esac; ')
+    lines.append("fi; root")
+    return "".join(lines)
 
 
 def applescript_escape(text: str) -> str:
@@ -856,7 +871,7 @@ def build_open_plan(
     messages: list[str] = []
     if report.os_name == "Windows":
         if report.wsl_root_in_env:
-            shell_command = interactive_wsl_conda_root_command()
+            shell_command = interactive_wsl_conda_root_command(report.wsl_conda_command)
             command = wsl_terminal_command(shell_command, report.wsl_distribution_name)
             messages.append(f"Opening ROOT in a new interactive WSL terminal using {ENV_NAME}.")
             return OpenPlan("Windows / WSL", messages, command, shell_command, True)
@@ -960,6 +975,8 @@ def miniforge_installer_name(os_name: str, machine: str | None = None) -> str:
         if arch == "arm64":
             return "Miniforge3-MacOSX-arm64.sh"
         return "Miniforge3-MacOSX-x86_64.sh"
+    if str(arch).lower() in {"aarch64", "arm64"}:
+        return "Miniforge3-Linux-aarch64.sh"
     return MINIFORGE_LINUX_INSTALLER
 
 

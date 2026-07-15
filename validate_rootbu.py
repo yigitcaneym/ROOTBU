@@ -706,6 +706,65 @@ def assert_wsl_version_two_stays_healthy() -> None:
     assert any("conda was not found" in message for message in logic.build_setup_guidance(report).messages)
 
 
+def assert_review_fixes() -> None:
+    # Linux/WSL ARM64 gets the aarch64 Miniforge installer; macOS is unchanged.
+    assert logic.miniforge_installer_name("Linux", "aarch64") == "Miniforge3-Linux-aarch64.sh"
+    assert logic.miniforge_installer_name("Linux", "arm64") == "Miniforge3-Linux-aarch64.sh"
+    assert logic.miniforge_installer_name("Linux", "x86_64") == "Miniforge3-Linux-x86_64.sh"
+    assert logic.miniforge_installer_name("Darwin", "arm64") == "Miniforge3-MacOSX-arm64.sh"
+    assert logic.miniforge_installer_name("Darwin", "x86_64") == "Miniforge3-MacOSX-x86_64.sh"
+
+    # Open ROOT in WSL uses the conda path ROOTBU actually detected.
+    detected = logic.SystemReport(
+        os_name="Windows", platform_label="Windows-test",
+        wsl_available=True, wsl_distribution_available=True, wsl_distribution_name="Ubuntu",
+        wsl_conda_available=True, wsl_conda_command="/opt/miniconda3/bin/conda", wsl_root_in_env=True,
+    )
+    detected_plan = logic.build_open_plan(detected)
+    assert "/opt/miniconda3/bin/activate" in detected_plan.manual_command
+    assert "rootbu_root_env" in detected_plan.manual_command
+    # Fallback must not turn a conda shell function into a broken ./activate path.
+    assert 'dirname "conda"' not in detected_plan.manual_command
+
+    # Default (ROOTBU-managed Miniforge) keeps the ~/miniforge3 activation.
+    default = logic.SystemReport(
+        os_name="Windows", platform_label="Windows-test",
+        wsl_available=True, wsl_distribution_available=True, wsl_distribution_name="Ubuntu",
+        wsl_conda_available=True, wsl_root_in_env=True,
+    )
+    assert 'source "$HOME/miniforge3/bin/activate" rootbu_root_env' in logic.build_open_plan(default).manual_command
+
+    # Docker Desktop pseudo-distros are not selected as the target.
+    def docker_and_ubuntu(command, _timeout):
+        if command == ["wsl", "--list", "--quiet"]:
+            return logic.ProbeResult(0, "docker-desktop\x00\ndocker-desktop-data\x00\nUbuntu\x00\n")
+        return logic.ProbeResult(127, "")
+    available, detail, selected = logic.check_wsl_distribution_available(docker_and_ubuntu)
+    assert available and selected == "Ubuntu"
+    assert "docker-desktop" not in detail
+
+    def docker_only(command, _timeout):
+        if command == ["wsl", "--list", "--quiet"]:
+            return logic.ProbeResult(0, "docker-desktop\ndocker-desktop-data\n")
+        return logic.ProbeResult(127, "")
+    available_only, _detail, selected_only = logic.check_wsl_distribution_available(docker_only)
+    assert not available_only and selected_only == ""
+
+    # UTF-16 NUL-interspersed "no installed distributions" is matched after stripping NULs.
+    original_which = logic.shutil.which
+    logic.shutil.which = lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl" else None
+    try:
+        nul_message = "".join(ch + "\x00" for ch in "no installed distributions")
+
+        def no_distro(command, _timeout):
+            if command == ["wsl", "--status"]:
+                return logic.ProbeResult(1, nul_message)
+            return logic.ProbeResult(1, "")
+        assert logic.check_wsl_available(no_distro) is True
+    finally:
+        logic.shutil.which = original_which
+
+
 def assert_action_states() -> None:
     original_home = os.environ.get("HOME")
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -898,6 +957,7 @@ def main() -> None:
     assert_wsl_kernel_version_parser()
     assert_wsl_version_one_is_detected_and_blocks()
     assert_wsl_version_two_stays_healthy()
+    assert_review_fixes()
     assert_action_states()
     assert_attribution_and_license()
     assert_distributable_build_files()
