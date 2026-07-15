@@ -786,6 +786,8 @@ class RootBUApp(ctk.CTk):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             creationflags=windows_creation_flags(),
         )

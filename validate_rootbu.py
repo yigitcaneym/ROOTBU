@@ -765,6 +765,16 @@ def assert_review_fixes() -> None:
         logic.shutil.which = original_which
 
 
+def assert_subprocess_decoding_is_utf8() -> None:
+    # run_probe (rootbu_logic) and stream_command (root_installer) must force UTF-8
+    # decoding so conda/bash UTF-8 output is not mojibaked or crashed with
+    # UnicodeDecodeError on non-UTF-8 Windows code pages (cp1254, cp932, cp936, ...).
+    for path in (PROJECT_ROOT / "rootbu_logic.py", PROJECT_ROOT / "root_installer.py"):
+        source = path.read_text(encoding="utf-8")
+        assert 'encoding="utf-8"' in source
+        assert 'errors="replace"' in source
+
+
 def assert_action_states() -> None:
     original_home = os.environ.get("HOME")
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -958,6 +968,7 @@ def main() -> None:
     assert_wsl_version_one_is_detected_and_blocks()
     assert_wsl_version_two_stays_healthy()
     assert_review_fixes()
+    assert_subprocess_decoding_is_utf8()
     assert_action_states()
     assert_attribution_and_license()
     assert_distributable_build_files()

@@ -202,6 +202,8 @@ def run_probe(command: Command, timeout: int = 12) -> ProbeResult:
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             creationflags=windows_creation_flags(),
         )
