@@ -770,6 +770,25 @@ def assert_review_fixes() -> None:
         logic.shutil.which = original_which
 
 
+def assert_prerequisite_label_reflects_needed() -> None:
+    # When conda is missing but ~/miniforge3 already exists, prerequisites ARE still
+    # needed (manual repair). The button must not read "No Prerequisites Needed".
+    original_dir = logic.native_miniforge_dir
+    with tempfile.TemporaryDirectory() as tmpdir:
+        existing = Path(tmpdir) / "miniforge3"
+        existing.mkdir()
+        logic.native_miniforge_dir = lambda: existing
+        try:
+            report = logic.SystemReport(os_name="Darwin", platform_label="macOS-test")
+            plan = logic.build_prerequisite_plan(report)
+            assert plan.needed and not plan.can_run and not plan.has_manual_commands
+            state = logic.build_action_state(report)
+            assert not state.install_prerequisites_enabled
+            assert state.install_prerequisites_label == "Manual Setup Needed"
+        finally:
+            logic.native_miniforge_dir = original_dir
+
+
 def assert_subprocess_decoding_is_utf8() -> None:
     # run_probe (rootbu_logic) and stream_command (root_installer) must force UTF-8
     # decoding so conda/bash UTF-8 output is not mojibaked or crashed with
@@ -974,6 +993,7 @@ def main() -> None:
     assert_wsl_version_two_stays_healthy()
     assert_review_fixes()
     assert_subprocess_decoding_is_utf8()
+    assert_prerequisite_label_reflects_needed()
     assert_action_states()
     assert_attribution_and_license()
     assert_distributable_build_files()

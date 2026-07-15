@@ -952,7 +952,10 @@ def build_action_state(report: SystemReport | None) -> ActionState:
     prerequisite_enabled = prerequisite_plan.needed and prerequisite_plan.can_run
     if prerequisite_enabled:
         prerequisite_label = "Install Prerequisites"
-    elif prerequisite_plan.needed and prerequisite_plan.has_manual_commands:
+    elif prerequisite_plan.needed:
+        # Prerequisites are still required even when ROOTBU cannot run them
+        # automatically (e.g. ~/miniforge3 exists but conda is broken). Do not
+        # mislabel this as "No Prerequisites Needed".
         prerequisite_label = "Manual Setup Needed"
     else:
         prerequisite_label = "No Prerequisites Needed"
