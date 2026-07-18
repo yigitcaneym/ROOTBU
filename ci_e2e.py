@@ -53,11 +53,14 @@ def verify_root(report) -> int:
         f"conda activate {logic.ENV_NAME} && "
         "root -l -b -q -e 'printf(\"ROOT_E2E_OK %s\\n\", gROOT->GetVersion());'"
     )
-    code, output = run_command(["wsl", "-d", distro, "bash", "-lc", verify_script])
-    if code == 0 and "ROOT_E2E_OK" in output:
-        print("E2E RESULT: SUCCESS — ROOT runs inside WSL 2", flush=True)
+    code, output = run_command(logic.wsl_shell_command(verify_script, distro))
+    # ROOT uses the value of the -e expression as its exit code (printf
+    # returns the number of characters written), so the marker in the output
+    # is the success signal, not the exit code.
+    if "ROOT_E2E_OK" in output:
+        print(f"E2E RESULT: SUCCESS — ROOT runs inside WSL 2 (verify exit code {code})", flush=True)
         return 0
-    print(f"E2E RESULT: FAILURE — verification exited {code}", flush=True)
+    print(f"E2E RESULT: FAILURE — verification exited {code} without the marker", flush=True)
     return 1
 
 
