@@ -79,7 +79,7 @@ jobs:
           Write-Host "uname exit=$code output=$uname"
           wsl.exe -l -v
           Write-Host "--- distro environment diagnostics ---"
-          wsl.exe -d Ubuntu -- sh -c 'echo PATH=$PATH; command -v whoami; command -v curl; id -un'
+          wsl.exe -d Ubuntu --exec sh -c 'echo PATH=$PATH; command -v whoami; command -v curl; id -un'
           if ($code -eq 0 -and $uname -match "microsoft") {
             Write-Host "VERDICT: WSL2 boots on this runner"
             "wsl2_ok=true" >> $env:GITHUB_OUTPUT

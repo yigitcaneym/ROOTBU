@@ -642,9 +642,13 @@ def wsl_kernel_update_error_guidance() -> list[str]:
 
 
 def wsl_shell_command(script: str, distro: str = "") -> Command:
+    # --exec runs bash directly with these exact arguments. Without it,
+    # wsl.exe hands the joined command line to the distro's default shell,
+    # which expands $(...) and ${...} once BEFORE bash ever sees the script —
+    # with that shell's own (possibly empty) PATH and variables.
     if distro:
-        return ["wsl", "-d", distro, "bash", "-lc", script]
-    return ["wsl", "bash", "-lc", script]
+        return ["wsl", "-d", distro, "--exec", "bash", "-lc", script]
+    return ["wsl", "--exec", "bash", "-lc", script]
 
 
 def run_wsl_probe(script: str, runner: Runner, timeout: int = 15, distro: str = "") -> ProbeResult:

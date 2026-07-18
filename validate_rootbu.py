@@ -291,7 +291,7 @@ def assert_prerequisite_plans() -> None:
     assert "df -Pk" in wsl_text
     assert "[ ! -s \"$INSTALLER\" ]" in wsl_text
     assert "bash \"$INSTALLER\" -b -p \"$TARGET\"" in wsl_text
-    assert all(step.command[:4] == ["wsl", "-d", "Ubuntu", "bash"] for step in wsl_plan.steps)
+    assert all(step.command[:4] == ["wsl", "-d", "Ubuntu", "--exec", "bash"] for step in wsl_plan.steps)
     assert wsl_plan.manual_commands == command_texts(wsl_plan)
     assert_no_destructive_prerequisite_commands(wsl_plan)
 
@@ -578,7 +578,7 @@ def assert_windows_wsl_without_distribution_detection() -> None:
         for item in report.checks
     )
     assert ["wsl", "--list", "--quiet"] in commands
-    assert not any(command[:3] == ["wsl", "bash", "-lc"] for command in commands)
+    assert not any(command[:4] == ["wsl", "--exec", "bash", "-lc"] for command in commands)
 
 
 def assert_windows_wsl_uses_selected_ubuntu() -> None:
@@ -596,7 +596,7 @@ def assert_windows_wsl_uses_selected_ubuntu() -> None:
             return logic.ProbeResult(0, "Default Distribution: Ubuntu\nDefault Version: 2")
         if command == ["wsl", "--list", "--quiet"]:
             return logic.ProbeResult(0, "Ubuntu\n")
-        if command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"]:
+        if command[:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"]:
             script = command[5]
             if script == logic.wsl_conda_probe_script():
                 return logic.ProbeResult(0, "__ROOTBU_CONDA__=$HOME/miniforge3/bin/conda\nconda 26.3.2")
@@ -615,12 +615,12 @@ def assert_windows_wsl_uses_selected_ubuntu() -> None:
     assert report.wsl_distribution_name == "Ubuntu"
     assert report.wsl_conda_available
     assert report.wsl_conda_command == "$HOME/miniforge3/bin/conda"
-    assert any(command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"] for command in commands)
-    assert not any(command[:3] == ["wsl", "bash", "-lc"] for command in commands)
+    assert any(command[:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"] for command in commands)
+    assert not any(command[:4] == ["wsl", "--exec", "bash", "-lc"] for command in commands)
 
     install_plan = logic.build_install_plan(report)
     assert install_plan.commands
-    assert install_plan.commands[0][:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"]
+    assert install_plan.commands[0][:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"]
 
     prerequisite_report = logic.SystemReport(
         os_name="Windows",
@@ -631,7 +631,7 @@ def assert_windows_wsl_uses_selected_ubuntu() -> None:
         wsl_conda_available=False,
     )
     prerequisite_plan = logic.build_prerequisite_plan(prerequisite_report)
-    assert all(step.command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"] for step in prerequisite_plan.steps)
+    assert all(step.command[:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"] for step in prerequisite_plan.steps)
 
 
 def assert_wsl_kernel_version_parser() -> None:
@@ -653,7 +653,7 @@ def _windows_wsl_report(uname_release: str, conda_returncode: int = 1) -> logic.
             return logic.ProbeResult(0, "Default Version: 2")
         if command == ["wsl", "--list", "--quiet"]:
             return logic.ProbeResult(0, "Ubuntu\n")
-        if command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"]:
+        if command[:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"]:
             script = command[5]
             if script == "uname -r":
                 return logic.ProbeResult(0, uname_release + "\n")
