@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterable
 
@@ -196,6 +197,18 @@ def is_windows_admin() -> bool:
         return False
 
 
+def virtualization_firmware_enabled() -> bool | None:
+    """Whether CPU virtualization is enabled in the firmware (BIOS/UEFI).
+    Returns None when it cannot be determined (non-Windows or API failure)."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        PF_VIRT_FIRMWARE_ENABLED = 21
+        return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED))
+    except (AttributeError, OSError):
+        return None
+
+
 def run_probe(command: Command, timeout: int = 12) -> ProbeResult:
     try:
         result = subprocess.run(
@@ -289,8 +302,15 @@ def clean_command_output_lines(text: str) -> list[str]:
     return lines
 
 
+def normalize_wsl_output(output: str) -> str:
+    """wsl.exe prints its own messages as UTF-16, so a UTF-8 decode leaves a
+    NUL byte between every character ("w\x00s\x00l\x00..."). Strip them so
+    substring detection works on captured wsl.exe output."""
+    return output.replace("\x00", "")
+
+
 def has_wsl_virtualization_error(output: str) -> bool:
-    lowered = output.lower()
+    lowered = normalize_wsl_output(output).lower()
     return any(pattern in lowered for pattern in WSL_VIRTUALIZATION_ERROR_PATTERNS)
 
 
@@ -572,16 +592,52 @@ def wsl_version_one_messages(distro: str) -> list[str]:
     return [
         f"{name} is installed, but it is running on WSL 1.",
         "WSL 1 cannot run conda, Miniforge, or ROOT reliably, so ROOTBU cannot continue on WSL 1.",
-        "Convert the distribution to WSL 2, then reopen ROOTBU and run Check System.",
-        "WSL 2 needs the Virtual Machine Platform Windows feature and CPU virtualization enabled in the BIOS/UEFI.",
-        "Run these commands in Administrator PowerShell, then restart Windows if you are asked to:",
+        "ROOTBU can enable the Virtual Machine Platform Windows feature (UAC prompt), install the official WSL 2 kernel update if it is missing, and convert the distribution to WSL 2 — all after one confirmation.",
+        "WSL 2 also needs CPU virtualization enabled in the BIOS/UEFI — ROOTBU cannot change BIOS settings.",
+        "If Windows asks for a restart, restart and then run Check System again.",
+        "Manual command(s), if you prefer to run them yourself in Administrator PowerShell:",
     ]
 
 
-def wsl_version_one_commands(distro: str) -> list[str]:
+VIRTUAL_MACHINE_PLATFORM_DISM = "dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart"
+WSL_RESTART_REQUIRED_MARKER = "A Windows restart is required to finish enabling Virtual Machine Platform."
+
+
+def wsl_version_one_commands(distro: str, machine: str | None = None) -> list[str]:
+    msi_name = wsl2_kernel_msi_name(machine)
     return [
-        "dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart",
+        VIRTUAL_MACHINE_PLATFORM_DISM,
+        f'curl.exe -fsSL -o "%TEMP%\\{msi_name}" {wsl2_kernel_msi_url(machine)}',
+        f'msiexec.exe /i "%TEMP%\\{msi_name}" /passive /norestart',
         wsl_set_version_command(distro),
+    ]
+
+
+def has_wsl_restart_required_marker(output: str) -> bool:
+    return WSL_RESTART_REQUIRED_MARKER.lower() in normalize_wsl_output(output).lower()
+
+
+def wsl_restart_required_guidance() -> list[str]:
+    return [
+        "This step finished, but Windows must restart before it becomes active.",
+        "Restart Windows now, then open ROOTBU and press Convert to WSL 2 again.",
+        "ROOTBU stopped the remaining steps because they cannot succeed until after the restart.",
+    ]
+
+
+def has_wsl_kernel_update_error(output: str) -> bool:
+    # wsl.exe prints this error in the system language, but the
+    # https://aka.ms/wsl2kernel link is present in every localization.
+    return "wsl2kernel" in normalize_wsl_output(output).lower()
+
+
+def wsl_kernel_update_error_guidance() -> list[str]:
+    return [
+        "The WSL 2 kernel component is missing, so the conversion cannot finish yet.",
+        "Press Convert to WSL 2 again — ROOTBU will download and install the official kernel update automatically.",
+        "If Windows asked for a restart, restart first.",
+        "Manual alternative: install it yourself from https://aka.ms/wsl2kernel.",
+        "Reminder: CPU virtualization must also be enabled in the BIOS/UEFI (see the system scan).",
     ]
 
 
@@ -627,6 +683,18 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
                     report.checks.append(
                         CheckItem("WSL version", STATUS_ERROR, wsl_version_one_detail(report.wsl_distribution_name))
                     )
+                    if wsl2_kernel_installed():
+                        report.checks.append(
+                            CheckItem("WSL 2 kernel", STATUS_OK, "Kernel update package is installed.")
+                        )
+                    else:
+                        report.checks.append(
+                            CheckItem(
+                                "WSL 2 kernel",
+                                STATUS_WARN,
+                                "Not installed. ROOTBU downloads and installs it during Convert to WSL 2.",
+                            )
+                        )
                 elif report.wsl_distribution_version == 2:
                     report.checks.append(
                         CheckItem(
@@ -639,6 +707,24 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
             report.checks.append(
                 CheckItem("WSL", STATUS_WARN, "WSL was not detected. ROOTBU can run wsl --install after confirmation.")
             )
+
+        # WSL 2 needs virtualization enabled in the firmware. Surface it in
+        # the scan while the pipeline has not reached WSL 2 yet, so users see
+        # the (BIOS-only) blocker before a conversion attempt fails.
+        if report.wsl_distribution_version != 2:
+            firmware = virtualization_firmware_enabled()
+            if firmware is False:
+                report.checks.append(
+                    CheckItem(
+                        "CPU virtualization",
+                        STATUS_WARN,
+                        "Disabled in firmware. Enable Intel VT-x / AMD-V in BIOS/UEFI — ROOTBU cannot change BIOS settings.",
+                    )
+                )
+            elif firmware is True:
+                report.checks.append(
+                    CheckItem("CPU virtualization", STATUS_OK, "Enabled in firmware.")
+                )
     else:
         report.checks.append(CheckItem("WSL", STATUS_INFO, f"Not required on {os_name}."))
 
@@ -1049,6 +1135,115 @@ def build_wsl_distribution_steps(*, windows_is_admin: bool) -> list[CommandStep]
     return [CommandStep("Opening elevated PowerShell for Ubuntu installation...", elevated_wsl_install_command(command, message))]
 
 
+def virtual_machine_platform_script(*, pause_before_close: bool) -> str:
+    """PowerShell script that enables the Virtual Machine Platform feature.
+    dism exits with 3010 when the feature was enabled but Windows needs a
+    restart. The 3010 code is passed through so the app can stop and tell
+    the user to restart — it survives the elevated (UAC) path too, where
+    the window's text output cannot be captured."""
+    tail = (
+        'Write-Host ""; '
+        'Write-Host "Virtual Machine Platform step finished. Return to ROOTBU."; '
+        'Read-Host "Press Enter to close this window"; '
+        if pause_before_close
+        else ""
+    )
+    return (
+        f"{VIRTUAL_MACHINE_PLATFORM_DISM}; "
+        "$dismCode = $LASTEXITCODE; "
+        "if ($dismCode -eq 3010) { "
+        f"Write-Host '{WSL_RESTART_REQUIRED_MARKER}' }}; "
+        f"{tail}"
+        "exit $dismCode"
+    )
+
+
+WSL2_KERNEL_MSI_BASE = "https://wslstorestorage.blob.core.windows.net/wslblob"
+
+
+def wsl2_kernel_msi_name(machine: str | None = None) -> str:
+    arch = str(machine or platform.machine()).lower()
+    if arch in {"arm64", "aarch64"}:
+        return "wsl_update_arm64.msi"
+    return "wsl_update_x64.msi"
+
+
+def wsl2_kernel_msi_url(machine: str | None = None) -> str:
+    return f"{WSL2_KERNEL_MSI_BASE}/{wsl2_kernel_msi_name(machine)}"
+
+
+def wsl2_kernel_installed() -> bool:
+    """The inbox WSL keeps the kernel update at System32\\lxss\\tools\\kernel;
+    missing file means wsl --set-version will fail with the wsl2kernel error."""
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    try:
+        return (Path(system_root) / "System32" / "lxss" / "tools" / "kernel").is_file()
+    except OSError:
+        return False
+
+
+def wsl2_kernel_msiexec_command(msi_path: str) -> str:
+    return f'msiexec.exe /i "{msi_path}" /passive /norestart'
+
+
+def build_wsl2_kernel_steps(*, windows_is_admin: bool, machine: str | None = None) -> list[CommandStep]:
+    msi_name = wsl2_kernel_msi_name(machine)
+    msi_path = str(Path(tempfile.gettempdir()) / msi_name)
+    download_step = CommandStep(
+        "Downloading the official WSL 2 kernel update from Microsoft...",
+        ["curl.exe", "-fsSL", "-o", msi_path, wsl2_kernel_msi_url(machine)],
+    )
+    if windows_is_admin:
+        install_step = CommandStep(
+            "Installing the WSL 2 kernel update...",
+            ["msiexec.exe", "/i", msi_path, "/passive", "/norestart"],
+        )
+    else:
+        admin_command = (
+            f"{wsl2_kernel_msiexec_command(msi_path)}; "
+            "$msiCode = $LASTEXITCODE; "
+            'Write-Host ""; '
+            'Write-Host "WSL 2 kernel step finished. Return to ROOTBU."; '
+            'Read-Host "Press Enter to close this window"; '
+            "exit $msiCode"
+        )
+        install_step = CommandStep(
+            "Opening elevated PowerShell to install the WSL 2 kernel update...",
+            elevated_powershell_command(admin_command),
+        )
+    return [download_step, install_step]
+
+
+def build_wsl_version_two_steps(
+    distro: str,
+    *,
+    windows_is_admin: bool,
+    kernel_missing: bool | None = None,
+    machine: str | None = None,
+) -> list[CommandStep]:
+    if kernel_missing is None:
+        kernel_missing = not wsl2_kernel_installed()
+    if windows_is_admin:
+        feature_step = CommandStep(
+            "Enabling the Virtual Machine Platform Windows feature...",
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+             virtual_machine_platform_script(pause_before_close=False)],
+        )
+    else:
+        feature_step = CommandStep(
+            "Opening elevated PowerShell to enable Virtual Machine Platform...",
+            elevated_powershell_command(virtual_machine_platform_script(pause_before_close=True)),
+        )
+    steps = [feature_step]
+    if kernel_missing:
+        steps.extend(build_wsl2_kernel_steps(windows_is_admin=windows_is_admin, machine=machine))
+    steps.append(CommandStep(
+        "Converting the distribution to WSL 2 (this can take a few minutes)...",
+        ["wsl", "--set-version", distro or "Ubuntu", "2"],
+    ))
+    return steps
+
+
 def miniforge_download_script(url: str, installer_name: str) -> str:
     return (
         'set -e; '
@@ -1202,6 +1397,7 @@ def build_prerequisite_plan(
     machine: str | None = None,
     native_miniforge_exists: bool | None = None,
     windows_is_admin: bool | None = None,
+    wsl2_kernel_missing: bool | None = None,
 ) -> PrerequisitePlan:
     if report.os_name == "Windows":
         if not report.wsl_available:
@@ -1249,6 +1445,7 @@ def build_prerequisite_plan(
             )
 
         if report.wsl_distribution_version == 1:
+            admin = is_windows_admin() if windows_is_admin is None else windows_is_admin
             return PrerequisitePlan(
                 context="Windows / WSL",
                 title="Convert WSL to version 2",
@@ -1257,8 +1454,15 @@ def build_prerequisite_plan(
                 install_location=f"{report.wsl_distribution_name or 'Ubuntu'} distribution",
                 summary_command=wsl_set_version_command(report.wsl_distribution_name),
                 requires_admin=True,
+                opens_elevated=not admin,
                 messages=wsl_version_one_messages(report.wsl_distribution_name),
-                manual_commands=wsl_version_one_commands(report.wsl_distribution_name),
+                steps=build_wsl_version_two_steps(
+                    report.wsl_distribution_name,
+                    windows_is_admin=admin,
+                    kernel_missing=wsl2_kernel_missing,
+                    machine=machine,
+                ),
+                manual_commands=wsl_version_one_commands(report.wsl_distribution_name, machine=machine),
             )
 
         if not report.wsl_conda_available:

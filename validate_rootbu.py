@@ -669,7 +669,7 @@ def _windows_wsl_report(uname_release: str, conda_returncode: int = 1) -> logic.
         logic.shutil.which = original_which
 
 
-def assert_wsl_version_one_is_detected_and_blocks() -> None:
+def assert_wsl_version_one_is_detected_and_convertible() -> None:
     report = _windows_wsl_report("4.4.0-19041-Microsoft")
 
     assert report.wsl_distribution_version == 1
@@ -691,14 +691,78 @@ def assert_wsl_version_one_is_detected_and_blocks() -> None:
     assert not action.install_root_enabled
     assert not action.open_root_enabled
 
-    plan = logic.build_prerequisite_plan(report)
+    # ROOTBU can now run the whole conversion itself: an elevated dism step
+    # that enables Virtual Machine Platform (exit code 3010 = restart
+    # required), the official WSL 2 kernel download + install when the
+    # kernel is missing, then wsl --set-version.
+    plan = logic.build_prerequisite_plan(report, windows_is_admin=False, wsl2_kernel_missing=True)
     assert plan.needed
-    assert not plan.can_run
+    assert plan.can_run
+    assert plan.requires_admin
+    assert plan.opens_elevated
+    assert len(plan.steps) == 4
+    feature_text = logic.command_to_text(plan.steps[0].command)
+    assert "VirtualMachinePlatform" in feature_text
+    assert "Start-Process powershell.exe -Verb RunAs" in feature_text
+    assert "3010" in feature_text
+    download_text = logic.command_to_text(plan.steps[1].command)
+    assert "curl.exe" in download_text
+    assert "wslstorestorage.blob.core.windows.net" in download_text
+    assert "wsl_update" in download_text
+    install_text = logic.command_to_text(plan.steps[2].command)
+    assert "msiexec.exe" in install_text
+    assert "/norestart" in install_text
+    assert "Start-Process powershell.exe -Verb RunAs" in install_text
+    assert plan.steps[3].command == ["wsl", "--set-version", "Ubuntu", "2"]
+
+    admin_plan = logic.build_prerequisite_plan(report, windows_is_admin=True, wsl2_kernel_missing=True)
+    assert admin_plan.can_run
+    assert not admin_plan.opens_elevated
+    assert len(admin_plan.steps) == 4
+    assert admin_plan.steps[2].command[0] == "msiexec.exe"
+    assert "Start-Process" not in logic.command_to_text(admin_plan.steps[0].command)
+
+    kernel_present_plan = logic.build_prerequisite_plan(report, windows_is_admin=True, wsl2_kernel_missing=False)
+    assert len(kernel_present_plan.steps) == 2
+    assert kernel_present_plan.steps[1].command == ["wsl", "--set-version", "Ubuntu", "2"]
+
     assert plan.has_manual_commands
     assert any("set-version" in command for command in plan.manual_commands)
+    assert any("/online" in command and "/enable-feature" in command for command in plan.manual_commands)
+    assert any("msiexec.exe" in command for command in plan.manual_commands)
     for command in plan.manual_commands:
         assert "sudo" not in command
         assert "rm -rf" not in command
+
+    # Restart-required (dism 3010) and missing WSL 2 kernel dead ends must be
+    # detected and explained instead of failing with a bare exit code.
+    assert logic.has_wsl_restart_required_marker(logic.WSL_RESTART_REQUIRED_MARKER)
+    assert logic.has_wsl_kernel_update_error(
+        "WSL 2 requires an update to its kernel component. For information please visit https://aka.ms/wsl2kernel"
+    )
+    assert logic.has_wsl_kernel_update_error(
+        "WSL 2 için çekirdek bileşenine yönelik bir güncelleştirme gerekir. https://aka.ms/wsl2kernel adresini ziyaret edin"
+    )
+    # wsl.exe messages are UTF-16: decoded as UTF-8 every character is
+    # followed by a NUL. Detection must survive that byte pattern.
+    nul_interleaved = "\x00".join("visit https://aka.ms/wsl2kernel now") + "\x00"
+    assert logic.has_wsl_kernel_update_error(nul_interleaved)
+    nul_virtualization = "\x00".join(
+        "Error code: Wsl/InstallDistro/Service/RegisterDistro/CreateVm/HCS/HCS_E_HYPERV_NOT_INSTALLED"
+    )
+    assert logic.has_wsl_virtualization_error(nul_virtualization)
+    assert logic.normalize_wsl_output("w\x00s\x00l\x00") == "wsl"
+    restart_guidance = "\n".join(logic.wsl_restart_required_guidance())
+    assert "Restart Windows now" in restart_guidance
+    assert "Convert to WSL 2 again" in restart_guidance
+    kernel_guidance = "\n".join(logic.wsl_kernel_update_error_guidance())
+    assert "aka.ms/wsl2kernel" in kernel_guidance
+    assert "BIOS/UEFI" in kernel_guidance
+
+    app_source = (PROJECT_ROOT / "root_installer.py").read_text(encoding="utf-8")
+    assert "has_wsl_restart_required_marker" in app_source
+    assert "has_wsl_kernel_update_error" in app_source
+    assert "3010" in app_source
 
 
 def assert_wsl_version_two_stays_healthy() -> None:
@@ -989,7 +1053,7 @@ def main() -> None:
     assert_windows_wsl_without_distribution_detection()
     assert_windows_wsl_uses_selected_ubuntu()
     assert_wsl_kernel_version_parser()
-    assert_wsl_version_one_is_detected_and_blocks()
+    assert_wsl_version_one_is_detected_and_convertible()
     assert_wsl_version_two_stays_healthy()
     assert_review_fixes()
     assert_subprocess_decoding_is_utf8()
