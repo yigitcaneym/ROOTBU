@@ -1269,6 +1269,12 @@ def wsl_miniforge_environment_script(installer_name: str = MINIFORGE_LINUX_INSTA
     distro_label = distro or "default"
     distro_label = distro_label.replace("\\", "\\\\").replace('"', '\\"')
     return (
+        # Defensive preamble: a dead start directory (e.g. a Windows path that
+        # is not mounted) breaks pwd/relative operations, and some minimal or
+        # freshly imported distros start with an empty PATH so no external
+        # command can run at all.
+        'cd / 2>/dev/null || true; '
+        'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"; '
         f'echo "Selected WSL distro: {distro_label}"; '
         'WHOAMI_RESULT="$(whoami 2>/dev/null || true)"; '
         'ID_UN_RESULT="$(id -un 2>/dev/null || true)"; '
@@ -1285,7 +1291,7 @@ def wsl_miniforge_environment_script(installer_name: str = MINIFORGE_LINUX_INSTA
         'echo "pwd: ${PWD_RESULT:-not available}"; '
         'echo "Resolved WSL user: ${USER_NAME:-not available}"; '
         'echo "Miniforge target: ${TARGET:-not available}"; '
-        'if [ -z "$USER_NAME" ]; then echo "ERROR: Could not determine WSL user from whoami or id -un."; exit 20; fi; '
+        'if [ -z "$USER_NAME" ] && [ -z "$HOME_DIR" ]; then echo "ERROR: Could not determine WSL user from whoami or id -un."; exit 20; fi; '
         'test -n "$HOME_DIR" || { echo "ERROR: WSL HOME is empty and getent passwd did not return a home directory."; exit 21; }; '
         'test -n "$TARGET" || { echo "ERROR: Miniforge target is empty inside WSL."; exit 22; }; '
         'if [ "$TARGET" = "/miniforge3" ]; then echo "ERROR: Miniforge target is empty inside WSL."; exit 22; fi; '
