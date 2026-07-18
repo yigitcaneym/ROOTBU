@@ -345,7 +345,7 @@ def has_wsl_miniforge_preflight_error(output: str) -> bool:
 
 
 def wsl_miniforge_preflight_error_guidance(distro: str = "Ubuntu") -> list[str]:
-    diagnostic_command = f"wsl -d {distro} bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'"
+    diagnostic_command = f"wsl -d {distro} --exec bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'"
     return [
         "WSL Miniforge preflight did not pass. The diagnostic output from WSL is shown above.",
         f"If Ubuntu opens normally, run this diagnostic command in PowerShell: {diagnostic_command}",
