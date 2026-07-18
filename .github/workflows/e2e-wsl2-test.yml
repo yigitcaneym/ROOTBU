@@ -93,6 +93,8 @@ jobs:
         if: steps.verdict.outputs.wsl2_ok == 'true'
         shell: pwsh
         timeout-minutes: 150
+        env:
+          PYTHONUTF8: "1"
         run: |
           python -B ci_e2e.py
           Write-Host "ci_e2e exit: $LASTEXITCODE"

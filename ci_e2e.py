@@ -12,6 +12,12 @@ from __future__ import annotations
 import subprocess
 import sys
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 import rootbu_logic as logic
 
 MAX_ITERATIONS = 8
