@@ -1036,6 +1036,12 @@ def assert_distributable_build_files() -> None:
 
 
 def main() -> None:
+    # GitHub's macos-latest runners are Apple Silicon (arm64). Several assertions
+    # below check the architecture-neutral logic paths and expect the x86_64
+    # installer names, so pin the reported machine to keep the suite deterministic
+    # on every runner. Tests that care about a specific architecture pass their own
+    # machine argument and are unaffected by this.
+    logic.platform.machine = lambda: "x86_64"
     parse_python_files()
     assert_safe_environment_name()
     assert_conda_env_parser()
