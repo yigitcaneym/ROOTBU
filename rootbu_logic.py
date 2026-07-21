@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterable
 
@@ -97,6 +98,7 @@ class SystemReport:
     wsl_distribution_available: bool = False
     wsl_distribution_detail: str = ""
     wsl_distribution_name: str = ""
+    wsl_distribution_version: int | None = None
     wsl_conda_available: bool = False
     wsl_conda_command: str = ""
     wsl_env_exists: bool = False
@@ -195,12 +197,26 @@ def is_windows_admin() -> bool:
         return False
 
 
+def virtualization_firmware_enabled() -> bool | None:
+    """Whether CPU virtualization is enabled in the firmware (BIOS/UEFI).
+    Returns None when it cannot be determined (non-Windows or API failure)."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        PF_VIRT_FIRMWARE_ENABLED = 21
+        return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED))
+    except (AttributeError, OSError):
+        return None
+
+
 def run_probe(command: Command, timeout: int = 12) -> ProbeResult:
     try:
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             creationflags=windows_creation_flags(),
         )
@@ -286,8 +302,15 @@ def clean_command_output_lines(text: str) -> list[str]:
     return lines
 
 
+def normalize_wsl_output(output: str) -> str:
+    """wsl.exe prints its own messages as UTF-16, so a UTF-8 decode leaves a
+    NUL byte between every character ("w\x00s\x00l\x00..."). Strip them so
+    substring detection works on captured wsl.exe output."""
+    return output.replace("\x00", "")
+
+
 def has_wsl_virtualization_error(output: str) -> bool:
-    lowered = output.lower()
+    lowered = normalize_wsl_output(output).lower()
     return any(pattern in lowered for pattern in WSL_VIRTUALIZATION_ERROR_PATTERNS)
 
 
@@ -322,7 +345,7 @@ def has_wsl_miniforge_preflight_error(output: str) -> bool:
 
 
 def wsl_miniforge_preflight_error_guidance(distro: str = "Ubuntu") -> list[str]:
-    diagnostic_command = f"wsl -d {distro} bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'"
+    diagnostic_command = f"wsl -d {distro} --exec bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'"
     return [
         "WSL Miniforge preflight did not pass. The diagnostic output from WSL is shown above.",
         f"If Ubuntu opens normally, run this diagnostic command in PowerShell: {diagnostic_command}",
@@ -490,18 +513,20 @@ def check_wsl_available(runner: Runner) -> bool:
     status = runner(["wsl", "--status"], 10)
     if status.returncode == 0:
         return True
-    if "no installed distributions" in status.stdout.lower():
+    # wsl.exe emits UTF-16 output; when decoded as text it is interspersed with
+    # NUL bytes, so strip them before matching human-readable substrings.
+    if "no installed distributions" in status.stdout.replace("\x00", "").lower():
         return True
     distributions = runner(["wsl", "--list", "--quiet"], 10)
     if distributions.returncode == 0:
         return True
-    return "no installed distributions" in distributions.stdout.lower()
+    return "no installed distributions" in distributions.stdout.replace("\x00", "").lower()
 
 
 def parse_wsl_distribution_names(output: str) -> list[str]:
     names: list[str] = []
     for raw_line in output.splitlines():
-        name = raw_line.replace("\x00", "").strip().lstrip("*").strip()
+        name = raw_line.replace("\x00", "").replace("﻿", "").strip().lstrip("*").strip()
         if not name:
             continue
         lowered = name.lower()
@@ -523,7 +548,10 @@ def select_wsl_distribution_name(names: list[str]) -> str:
 
 def check_wsl_distribution_available(runner: Runner) -> tuple[bool, str, str]:
     result = runner(["wsl", "--list", "--quiet"], 10)
-    names = parse_wsl_distribution_names(result.stdout)
+    # Docker Desktop registers internal WSL distributions (docker-desktop,
+    # docker-desktop-data) that cannot host a conda/ROOT install. Ignore them so
+    # ROOTBU does not target a Docker pseudo-distro when no real Linux distro exists.
+    names = [n for n in parse_wsl_distribution_names(result.stdout) if not n.lower().startswith("docker-desktop")]
     if result.returncode == 0 and names:
         selected = select_wsl_distribution_name(names)
         return True, f"Installed distribution(s): {', '.join(names)}", selected
@@ -531,10 +559,96 @@ def check_wsl_distribution_available(runner: Runner) -> tuple[bool, str, str]:
     return False, "WSL is installed, but no Linux distribution is installed yet.", ""
 
 
+def parse_wsl_kernel_version(uname_release: str) -> int | None:
+    """Return 1 for a WSL 1 kernel, 2 for a WSL 2 kernel, or None if unknown.
+
+    WSL 1 reports a translation-layer kernel such as ``4.4.0-19041-Microsoft``.
+    WSL 2 reports a real Linux kernel such as ``5.15.167.4-microsoft-standard-WSL2``.
+    """
+    lowered = (uname_release or "").strip().lower()
+    if not lowered:
+        return None
+    if "microsoft-standard" in lowered or "wsl2" in lowered:
+        return 2
+    if "microsoft" in lowered:
+        return 1
+    return None
+
+
+def wsl_set_version_command(distro: str) -> str:
+    return f"wsl --set-version {distro or 'Ubuntu'} 2"
+
+
+def wsl_version_one_detail(distro: str) -> str:
+    name = distro or "The WSL distribution"
+    return (
+        f"{name} is running on WSL 1, which cannot run conda or ROOT reliably. "
+        "Convert it to WSL 2, then run Check System again."
+    )
+
+
+def wsl_version_one_messages(distro: str) -> list[str]:
+    name = distro or "your WSL distribution"
+    return [
+        f"{name} is installed, but it is running on WSL 1.",
+        "WSL 1 cannot run conda, Miniforge, or ROOT reliably, so ROOTBU cannot continue on WSL 1.",
+        "ROOTBU can enable the Virtual Machine Platform Windows feature (UAC prompt), install the official WSL 2 kernel update if it is missing, and convert the distribution to WSL 2 — all after one confirmation.",
+        "WSL 2 also needs CPU virtualization enabled in the BIOS/UEFI — ROOTBU cannot change BIOS settings.",
+        "If Windows asks for a restart, restart and then run Check System again.",
+        "Manual command(s), if you prefer to run them yourself in Administrator PowerShell:",
+    ]
+
+
+VIRTUAL_MACHINE_PLATFORM_DISM = "dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart"
+WSL_RESTART_REQUIRED_MARKER = "A Windows restart is required to finish enabling Virtual Machine Platform."
+
+
+def wsl_version_one_commands(distro: str, machine: str | None = None) -> list[str]:
+    msi_name = wsl2_kernel_msi_name(machine)
+    return [
+        VIRTUAL_MACHINE_PLATFORM_DISM,
+        f'curl.exe -fsSL -o "%TEMP%\\{msi_name}" {wsl2_kernel_msi_url(machine)}',
+        f'msiexec.exe /i "%TEMP%\\{msi_name}" /passive /norestart',
+        wsl_set_version_command(distro),
+    ]
+
+
+def has_wsl_restart_required_marker(output: str) -> bool:
+    return WSL_RESTART_REQUIRED_MARKER.lower() in normalize_wsl_output(output).lower()
+
+
+def wsl_restart_required_guidance() -> list[str]:
+    return [
+        "This step finished, but Windows must restart before it becomes active.",
+        "Restart Windows now, then open ROOTBU and press Convert to WSL 2 again.",
+        "ROOTBU stopped the remaining steps because they cannot succeed until after the restart.",
+    ]
+
+
+def has_wsl_kernel_update_error(output: str) -> bool:
+    # wsl.exe prints this error in the system language, but the
+    # https://aka.ms/wsl2kernel link is present in every localization.
+    return "wsl2kernel" in normalize_wsl_output(output).lower()
+
+
+def wsl_kernel_update_error_guidance() -> list[str]:
+    return [
+        "The WSL 2 kernel component is missing, so the conversion cannot finish yet.",
+        "Press Convert to WSL 2 again — ROOTBU will download and install the official kernel update automatically.",
+        "If Windows asked for a restart, restart first.",
+        "Manual alternative: install it yourself from https://aka.ms/wsl2kernel.",
+        "Reminder: CPU virtualization must also be enabled in the BIOS/UEFI (see the system scan).",
+    ]
+
+
 def wsl_shell_command(script: str, distro: str = "") -> Command:
+    # --exec runs bash directly with these exact arguments. Without it,
+    # wsl.exe hands the joined command line to the distro's default shell,
+    # which expands $(...) and ${...} once BEFORE bash ever sees the script —
+    # with that shell's own (possibly empty) PATH and variables.
     if distro:
-        return ["wsl", "-d", distro, "bash", "-lc", script]
-    return ["wsl", "bash", "-lc", script]
+        return ["wsl", "-d", distro, "--exec", "bash", "-lc", script]
+    return ["wsl", "--exec", "bash", "-lc", script]
 
 
 def run_wsl_probe(script: str, runner: Runner, timeout: int = 15, distro: str = "") -> ProbeResult:
@@ -566,10 +680,55 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
             )
             if report.wsl_distribution_name:
                 report.checks.append(CheckItem("Selected WSL distro", STATUS_INFO, report.wsl_distribution_name))
+                uname_result = run_wsl_probe("uname -r", runner, distro=report.wsl_distribution_name)
+                if uname_result.returncode == 0:
+                    report.wsl_distribution_version = parse_wsl_kernel_version(uname_result.stdout)
+                if report.wsl_distribution_version == 1:
+                    report.checks.append(
+                        CheckItem("WSL version", STATUS_ERROR, wsl_version_one_detail(report.wsl_distribution_name))
+                    )
+                    if wsl2_kernel_installed():
+                        report.checks.append(
+                            CheckItem("WSL 2 kernel", STATUS_OK, "Kernel update package is installed.")
+                        )
+                    else:
+                        report.checks.append(
+                            CheckItem(
+                                "WSL 2 kernel",
+                                STATUS_WARN,
+                                "Not installed. ROOTBU downloads and installs it during Convert to WSL 2.",
+                            )
+                        )
+                elif report.wsl_distribution_version == 2:
+                    report.checks.append(
+                        CheckItem(
+                            "WSL version",
+                            STATUS_OK,
+                            f"{report.wsl_distribution_name} is running on WSL 2.",
+                        )
+                    )
         else:
             report.checks.append(
                 CheckItem("WSL", STATUS_WARN, "WSL was not detected. ROOTBU can run wsl --install after confirmation.")
             )
+
+        # WSL 2 needs virtualization enabled in the firmware. Surface it in
+        # the scan while the pipeline has not reached WSL 2 yet, so users see
+        # the (BIOS-only) blocker before a conversion attempt fails.
+        if report.wsl_distribution_version != 2:
+            firmware = virtualization_firmware_enabled()
+            if firmware is False:
+                report.checks.append(
+                    CheckItem(
+                        "CPU virtualization",
+                        STATUS_WARN,
+                        "Disabled in firmware. Enable Intel VT-x / AMD-V in BIOS/UEFI — ROOTBU cannot change BIOS settings.",
+                    )
+                )
+            elif firmware is True:
+                report.checks.append(
+                    CheckItem("CPU virtualization", STATUS_OK, "Enabled in firmware.")
+                )
     else:
         report.checks.append(CheckItem("WSL", STATUS_INFO, f"Not required on {os_name}."))
 
@@ -598,7 +757,12 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
     else:
         report.checks.append(CheckItem("ROOT (native)", STATUS_WARN, root_detail))
 
-    if os_name == "Windows" and report.wsl_available and report.wsl_distribution_available:
+    if (
+        os_name == "Windows"
+        and report.wsl_available
+        and report.wsl_distribution_available
+        and report.wsl_distribution_version != 1
+    ):
         distro = report.wsl_distribution_name
         wsl_conda = run_wsl_probe(wsl_conda_probe_script(), runner, distro=distro)
         report.wsl_conda_available = wsl_conda.returncode == 0
@@ -645,6 +809,9 @@ def build_install_plan(report: SystemReport) -> InstallPlan:
             return InstallPlan("Windows / WSL", messages, [])
         if not report.wsl_distribution_available:
             messages.append("Install a WSL Linux distribution first, then run Check System again.")
+            return InstallPlan("Windows / WSL", messages, [])
+        if report.wsl_distribution_version == 1:
+            messages.extend(wsl_version_one_messages(report.wsl_distribution_name))
             return InstallPlan("Windows / WSL", messages, [])
         if not report.wsl_conda_available:
             messages.append("Install Miniforge or Miniconda inside WSL first, then run Check System again.")
@@ -726,15 +893,25 @@ def interactive_conda_root_command(conda_command: Command | None) -> str:
     return f"source {shell_quote_path(activate_script)} {shlex.quote(ENV_NAME)} && root"
 
 
-def interactive_wsl_conda_root_command() -> str:
+def interactive_wsl_conda_root_command(conda_command: str = "") -> str:
     env_name = shlex.quote(ENV_NAME)
-    return (
-        'if [ -f "$HOME/miniforge3/bin/activate" ]; then '
-        f'source "$HOME/miniforge3/bin/activate" {env_name}; '
-        'else CONDA_EXE="$(command -v conda)"; '
-        f'source "$(dirname "$CONDA_EXE")/activate" {env_name}; '
-        "fi; root"
-    )
+    default_activate = "$HOME/miniforge3/bin/activate"
+    detected = ""
+    if conda_command and conda_command not in {"conda", "conda.exe"}:
+        detected = activation_script_from_conda_command([conda_command])
+
+    primary = detected or default_activate
+    lines = [f'if [ -f "{primary}" ]; then source "{primary}" {env_name}; ']
+    if detected and detected != default_activate:
+        lines.append(f'elif [ -f "{default_activate}" ]; then source "{default_activate}" {env_name}; ')
+    # Fallback: only dereference conda if it is a real path. When conda is a shell
+    # function (the normal post `conda init` state) command -v prints just "conda",
+    # so guard against turning that into a broken "./activate" path.
+    lines.append('else CONDA_EXE="$(command -v conda)"; ')
+    lines.append(f'case "$CONDA_EXE" in */*) source "$(dirname "$CONDA_EXE")/activate" {env_name} ;; ')
+    lines.append(f'*) source "{default_activate}" {env_name} ;; esac; ')
+    lines.append("fi; root")
+    return "".join(lines)
 
 
 def applescript_escape(text: str) -> str:
@@ -786,7 +963,7 @@ def build_open_plan(
     messages: list[str] = []
     if report.os_name == "Windows":
         if report.wsl_root_in_env:
-            shell_command = interactive_wsl_conda_root_command()
+            shell_command = interactive_wsl_conda_root_command(report.wsl_conda_command)
             command = wsl_terminal_command(shell_command, report.wsl_distribution_name)
             messages.append(f"Opening ROOT in a new interactive WSL terminal using {ENV_NAME}.")
             return OpenPlan("Windows / WSL", messages, command, shell_command, True)
@@ -838,7 +1015,12 @@ def build_open_plan(
 
 def conda_available_for_root_install(report: SystemReport) -> bool:
     if report.os_name == "Windows":
-        return report.wsl_available and report.wsl_distribution_available and report.wsl_conda_available
+        return (
+            report.wsl_available
+            and report.wsl_distribution_available
+            and report.wsl_distribution_version != 1
+            and report.wsl_conda_available
+        )
     return report.native_conda is not None
 
 
@@ -860,7 +1042,10 @@ def build_action_state(report: SystemReport | None) -> ActionState:
     prerequisite_enabled = prerequisite_plan.needed and prerequisite_plan.can_run
     if prerequisite_enabled:
         prerequisite_label = "Install Prerequisites"
-    elif prerequisite_plan.needed and prerequisite_plan.has_manual_commands:
+    elif prerequisite_plan.needed:
+        # Prerequisites are still required even when ROOTBU cannot run them
+        # automatically (e.g. ~/miniforge3 exists but conda is broken). Do not
+        # mislabel this as "No Prerequisites Needed".
         prerequisite_label = "Manual Setup Needed"
     else:
         prerequisite_label = "No Prerequisites Needed"
@@ -885,6 +1070,8 @@ def miniforge_installer_name(os_name: str, machine: str | None = None) -> str:
         if arch == "arm64":
             return "Miniforge3-MacOSX-arm64.sh"
         return "Miniforge3-MacOSX-x86_64.sh"
+    if str(arch).lower() in {"aarch64", "arm64"}:
+        return "Miniforge3-Linux-aarch64.sh"
     return MINIFORGE_LINUX_INSTALLER
 
 
@@ -952,6 +1139,115 @@ def build_wsl_distribution_steps(*, windows_is_admin: bool) -> list[CommandStep]
     return [CommandStep("Opening elevated PowerShell for Ubuntu installation...", elevated_wsl_install_command(command, message))]
 
 
+def virtual_machine_platform_script(*, pause_before_close: bool) -> str:
+    """PowerShell script that enables the Virtual Machine Platform feature.
+    dism exits with 3010 when the feature was enabled but Windows needs a
+    restart. The 3010 code is passed through so the app can stop and tell
+    the user to restart — it survives the elevated (UAC) path too, where
+    the window's text output cannot be captured."""
+    tail = (
+        'Write-Host ""; '
+        'Write-Host "Virtual Machine Platform step finished. Return to ROOTBU."; '
+        'Read-Host "Press Enter to close this window"; '
+        if pause_before_close
+        else ""
+    )
+    return (
+        f"{VIRTUAL_MACHINE_PLATFORM_DISM}; "
+        "$dismCode = $LASTEXITCODE; "
+        "if ($dismCode -eq 3010) { "
+        f"Write-Host '{WSL_RESTART_REQUIRED_MARKER}' }}; "
+        f"{tail}"
+        "exit $dismCode"
+    )
+
+
+WSL2_KERNEL_MSI_BASE = "https://wslstorestorage.blob.core.windows.net/wslblob"
+
+
+def wsl2_kernel_msi_name(machine: str | None = None) -> str:
+    arch = str(machine or platform.machine()).lower()
+    if arch in {"arm64", "aarch64"}:
+        return "wsl_update_arm64.msi"
+    return "wsl_update_x64.msi"
+
+
+def wsl2_kernel_msi_url(machine: str | None = None) -> str:
+    return f"{WSL2_KERNEL_MSI_BASE}/{wsl2_kernel_msi_name(machine)}"
+
+
+def wsl2_kernel_installed() -> bool:
+    """The inbox WSL keeps the kernel update at System32\\lxss\\tools\\kernel;
+    missing file means wsl --set-version will fail with the wsl2kernel error."""
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    try:
+        return (Path(system_root) / "System32" / "lxss" / "tools" / "kernel").is_file()
+    except OSError:
+        return False
+
+
+def wsl2_kernel_msiexec_command(msi_path: str) -> str:
+    return f'msiexec.exe /i "{msi_path}" /passive /norestart'
+
+
+def build_wsl2_kernel_steps(*, windows_is_admin: bool, machine: str | None = None) -> list[CommandStep]:
+    msi_name = wsl2_kernel_msi_name(machine)
+    msi_path = str(Path(tempfile.gettempdir()) / msi_name)
+    download_step = CommandStep(
+        "Downloading the official WSL 2 kernel update from Microsoft...",
+        ["curl.exe", "-fsSL", "-o", msi_path, wsl2_kernel_msi_url(machine)],
+    )
+    if windows_is_admin:
+        install_step = CommandStep(
+            "Installing the WSL 2 kernel update...",
+            ["msiexec.exe", "/i", msi_path, "/passive", "/norestart"],
+        )
+    else:
+        admin_command = (
+            f"{wsl2_kernel_msiexec_command(msi_path)}; "
+            "$msiCode = $LASTEXITCODE; "
+            'Write-Host ""; '
+            'Write-Host "WSL 2 kernel step finished. Return to ROOTBU."; '
+            'Read-Host "Press Enter to close this window"; '
+            "exit $msiCode"
+        )
+        install_step = CommandStep(
+            "Opening elevated PowerShell to install the WSL 2 kernel update...",
+            elevated_powershell_command(admin_command),
+        )
+    return [download_step, install_step]
+
+
+def build_wsl_version_two_steps(
+    distro: str,
+    *,
+    windows_is_admin: bool,
+    kernel_missing: bool | None = None,
+    machine: str | None = None,
+) -> list[CommandStep]:
+    if kernel_missing is None:
+        kernel_missing = not wsl2_kernel_installed()
+    if windows_is_admin:
+        feature_step = CommandStep(
+            "Enabling the Virtual Machine Platform Windows feature...",
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+             virtual_machine_platform_script(pause_before_close=False)],
+        )
+    else:
+        feature_step = CommandStep(
+            "Opening elevated PowerShell to enable Virtual Machine Platform...",
+            elevated_powershell_command(virtual_machine_platform_script(pause_before_close=True)),
+        )
+    steps = [feature_step]
+    if kernel_missing:
+        steps.extend(build_wsl2_kernel_steps(windows_is_admin=windows_is_admin, machine=machine))
+    steps.append(CommandStep(
+        "Converting the distribution to WSL 2 (this can take a few minutes)...",
+        ["wsl", "--set-version", distro or "Ubuntu", "2"],
+    ))
+    return steps
+
+
 def miniforge_download_script(url: str, installer_name: str) -> str:
     return (
         'set -e; '
@@ -977,6 +1273,12 @@ def wsl_miniforge_environment_script(installer_name: str = MINIFORGE_LINUX_INSTA
     distro_label = distro or "default"
     distro_label = distro_label.replace("\\", "\\\\").replace('"', '\\"')
     return (
+        # Defensive preamble: a dead start directory (e.g. a Windows path that
+        # is not mounted) breaks pwd/relative operations, and some minimal or
+        # freshly imported distros start with an empty PATH so no external
+        # command can run at all.
+        'cd / 2>/dev/null || true; '
+        'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"; '
         f'echo "Selected WSL distro: {distro_label}"; '
         'WHOAMI_RESULT="$(whoami 2>/dev/null || true)"; '
         'ID_UN_RESULT="$(id -un 2>/dev/null || true)"; '
@@ -993,7 +1295,7 @@ def wsl_miniforge_environment_script(installer_name: str = MINIFORGE_LINUX_INSTA
         'echo "pwd: ${PWD_RESULT:-not available}"; '
         'echo "Resolved WSL user: ${USER_NAME:-not available}"; '
         'echo "Miniforge target: ${TARGET:-not available}"; '
-        'if [ -z "$USER_NAME" ]; then echo "ERROR: Could not determine WSL user from whoami or id -un."; exit 20; fi; '
+        'if [ -z "$USER_NAME" ] && [ -z "$HOME_DIR" ]; then echo "ERROR: Could not determine WSL user from whoami or id -un."; exit 20; fi; '
         'test -n "$HOME_DIR" || { echo "ERROR: WSL HOME is empty and getent passwd did not return a home directory."; exit 21; }; '
         'test -n "$TARGET" || { echo "ERROR: Miniforge target is empty inside WSL."; exit 22; }; '
         'if [ "$TARGET" = "/miniforge3" ]; then echo "ERROR: Miniforge target is empty inside WSL."; exit 22; fi; '
@@ -1086,7 +1388,17 @@ def build_miniforge_steps(
 
 
 def wsl_miniforge_manual_commands(distro: str = "") -> list[str]:
-    return [command_to_text(step.command) for step in build_miniforge_steps("Linux", inside_wsl=True, distro=distro)]
+    # Commands to paste inside an Ubuntu (WSL) shell. We deliberately do NOT wrap
+    # them in `wsl -d <distro> bash -lc '...'`: that form uses POSIX single-quote
+    # escaping that PowerShell and cmd.exe mis-parse, so a user copying it from the
+    # ROOTBU log would get a broken command. Plain bash lines run correctly once the
+    # user opens Ubuntu.
+    installer = miniforge_installer_name("Linux")
+    url = miniforge_url("Linux")
+    return [
+        f'curl --create-dirs -fsSLo "$HOME/.rootbu/{installer}" "{url}"',
+        f'bash "$HOME/.rootbu/{installer}" -b -p "$HOME/miniforge3"',
+    ]
 
 
 def build_prerequisite_plan(
@@ -1095,6 +1407,7 @@ def build_prerequisite_plan(
     machine: str | None = None,
     native_miniforge_exists: bool | None = None,
     windows_is_admin: bool | None = None,
+    wsl2_kernel_missing: bool | None = None,
 ) -> PrerequisitePlan:
     if report.os_name == "Windows":
         if not report.wsl_available:
@@ -1139,6 +1452,27 @@ def build_prerequisite_plan(
                 ],
                 steps=build_wsl_distribution_steps(windows_is_admin=admin),
                 manual_commands=["wsl --install -d Ubuntu"],
+            )
+
+        if report.wsl_distribution_version == 1:
+            admin = is_windows_admin() if windows_is_admin is None else windows_is_admin
+            return PrerequisitePlan(
+                context="Windows / WSL",
+                title="Convert WSL to version 2",
+                needed=True,
+                install_name="WSL 2 conversion",
+                install_location=f"{report.wsl_distribution_name or 'Ubuntu'} distribution",
+                summary_command=wsl_set_version_command(report.wsl_distribution_name),
+                requires_admin=True,
+                opens_elevated=not admin,
+                messages=wsl_version_one_messages(report.wsl_distribution_name),
+                steps=build_wsl_version_two_steps(
+                    report.wsl_distribution_name,
+                    windows_is_admin=admin,
+                    kernel_missing=wsl2_kernel_missing,
+                    machine=machine,
+                ),
+                manual_commands=wsl_version_one_commands(report.wsl_distribution_name, machine=machine),
             )
 
         if not report.wsl_conda_available:
@@ -1276,12 +1610,19 @@ def build_setup_guidance(report: SystemReport) -> SetupGuidance:
                 ["wsl --install -d Ubuntu"],
             )
 
+        if report.wsl_distribution_version == 1:
+            return SetupGuidance(
+                "Next Steps",
+                wsl_version_one_messages(report.wsl_distribution_name),
+                wsl_version_one_commands(report.wsl_distribution_name),
+            )
+
         if not report.wsl_conda_available:
             messages = [
                 "WSL is available, but conda was not found inside WSL.",
                 "Use Install Prerequisites to let ROOTBU install Miniforge inside WSL after confirmation.",
                 "Recommended: Miniforge is focused on conda-forge packages.",
-                "Or run these planned WSL commands manually from PowerShell:",
+                "Or open Ubuntu (WSL) and run these commands there yourself:",
             ] + conda_restart_messages("WSL terminal")
             return SetupGuidance("Next Steps", messages, wsl_miniforge_manual_commands(report.wsl_distribution_name))
 

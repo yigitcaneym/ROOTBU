@@ -124,8 +124,13 @@ def assert_setup_guidance() -> None:
     )
     wsl_guidance = logic.build_setup_guidance(windows_without_wsl_conda)
     assert "Miniforge3-Linux-x86_64.sh" in wsl_guidance.commands[0]
-    assert "wsl -d Ubuntu bash -lc" in wsl_guidance.commands[0]
+    # Manual WSL commands must be pasteable inside an Ubuntu shell, not wrapped in
+    # `wsl -d ... bash -lc '...'` (PowerShell/cmd mis-parse the POSIX quoting).
+    assert all("bash -lc" not in command for command in wsl_guidance.commands)
+    assert wsl_guidance.commands[0].startswith("curl")
+    assert any(command.startswith("bash ") and "miniforge3" in command for command in wsl_guidance.commands)
     assert any("inside WSL" in message for message in wsl_guidance.messages)
+    assert any("Ubuntu (WSL)" in message for message in wsl_guidance.messages)
 
     root_available_report = logic.SystemReport(
         os_name="Darwin",
@@ -272,7 +277,7 @@ def assert_prerequisite_plans() -> None:
     wsl_text = "\n".join(command_texts(wsl_plan))
     assert wsl_plan.needed
     assert wsl_plan.can_run
-    assert "wsl -d Ubuntu bash -lc" in wsl_text
+    assert "wsl -d Ubuntu --exec bash -lc" in wsl_text
     assert "wsl bash -lc" not in wsl_text
     assert "Miniforge3-Linux-x86_64.sh" in wsl_text
     assert any(step.label == "Checking WSL Miniforge prerequisites..." for step in wsl_plan.steps)
@@ -286,7 +291,7 @@ def assert_prerequisite_plans() -> None:
     assert "df -Pk" in wsl_text
     assert "[ ! -s \"$INSTALLER\" ]" in wsl_text
     assert "bash \"$INSTALLER\" -b -p \"$TARGET\"" in wsl_text
-    assert all(step.command[:4] == ["wsl", "-d", "Ubuntu", "bash"] for step in wsl_plan.steps)
+    assert all(step.command[:5] == ["wsl", "-d", "Ubuntu", "--exec", "bash"] for step in wsl_plan.steps)
     assert wsl_plan.manual_commands == command_texts(wsl_plan)
     assert_no_destructive_prerequisite_commands(wsl_plan)
 
@@ -408,7 +413,7 @@ def assert_wsl_miniforge_preflight_and_errors() -> None:
 
     preflight_guidance = "\n".join(logic.wsl_miniforge_preflight_error_guidance("Ubuntu"))
     assert "diagnostic output from WSL is shown above" in preflight_guidance
-    assert "wsl -d Ubuntu bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'" in preflight_guidance
+    assert "wsl -d Ubuntu --exec bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'" in preflight_guidance
     assert "/mnt/c is normal" in preflight_guidance
     assert "If the diagnostic command fails or HOME is empty" in preflight_guidance
 
@@ -573,7 +578,7 @@ def assert_windows_wsl_without_distribution_detection() -> None:
         for item in report.checks
     )
     assert ["wsl", "--list", "--quiet"] in commands
-    assert not any(command[:3] == ["wsl", "bash", "-lc"] for command in commands)
+    assert not any(command[:4] == ["wsl", "--exec", "bash", "-lc"] for command in commands)
 
 
 def assert_windows_wsl_uses_selected_ubuntu() -> None:
@@ -591,8 +596,8 @@ def assert_windows_wsl_uses_selected_ubuntu() -> None:
             return logic.ProbeResult(0, "Default Distribution: Ubuntu\nDefault Version: 2")
         if command == ["wsl", "--list", "--quiet"]:
             return logic.ProbeResult(0, "Ubuntu\n")
-        if command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"]:
-            script = command[5]
+        if command[:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"]:
+            script = command[6]
             if script == logic.wsl_conda_probe_script():
                 return logic.ProbeResult(0, "__ROOTBU_CONDA__=$HOME/miniforge3/bin/conda\nconda 26.3.2")
             if "env list" in script:
@@ -610,12 +615,12 @@ def assert_windows_wsl_uses_selected_ubuntu() -> None:
     assert report.wsl_distribution_name == "Ubuntu"
     assert report.wsl_conda_available
     assert report.wsl_conda_command == "$HOME/miniforge3/bin/conda"
-    assert any(command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"] for command in commands)
-    assert not any(command[:3] == ["wsl", "bash", "-lc"] for command in commands)
+    assert any(command[:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"] for command in commands)
+    assert not any(command[:4] == ["wsl", "--exec", "bash", "-lc"] for command in commands)
 
     install_plan = logic.build_install_plan(report)
     assert install_plan.commands
-    assert install_plan.commands[0][:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"]
+    assert install_plan.commands[0][:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"]
 
     prerequisite_report = logic.SystemReport(
         os_name="Windows",
@@ -626,7 +631,236 @@ def assert_windows_wsl_uses_selected_ubuntu() -> None:
         wsl_conda_available=False,
     )
     prerequisite_plan = logic.build_prerequisite_plan(prerequisite_report)
-    assert all(step.command[:5] == ["wsl", "-d", "Ubuntu", "bash", "-lc"] for step in prerequisite_plan.steps)
+    assert all(step.command[:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"] for step in prerequisite_plan.steps)
+
+
+def assert_wsl_kernel_version_parser() -> None:
+    assert logic.parse_wsl_kernel_version("4.4.0-19041-Microsoft") == 1
+    assert logic.parse_wsl_kernel_version("5.15.167.4-microsoft-standard-WSL2") == 2
+    assert logic.parse_wsl_kernel_version("6.6.36.6-microsoft-standard-WSL2") == 2
+    assert logic.parse_wsl_kernel_version("") is None
+    assert logic.parse_wsl_kernel_version("6.8.0-generic") is None
+
+
+def _windows_wsl_report(uname_release: str, conda_returncode: int = 1) -> logic.SystemReport:
+    original_which = logic.shutil.which
+
+    def fake_which(name: str):
+        return r"C:\Windows\System32\wsl.exe" if name == "wsl" else None
+
+    def runner(command, _timeout):
+        if command == ["wsl", "--status"]:
+            return logic.ProbeResult(0, "Default Version: 2")
+        if command == ["wsl", "--list", "--quiet"]:
+            return logic.ProbeResult(0, "Ubuntu\n")
+        if command[:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"]:
+            script = command[6]
+            if script == "uname -r":
+                return logic.ProbeResult(0, uname_release + "\n")
+            if script == logic.wsl_conda_probe_script():
+                return logic.ProbeResult(conda_returncode, "")
+            return logic.ProbeResult(1, "")
+        return logic.ProbeResult(127, "")
+
+    logic.shutil.which = fake_which
+    try:
+        return logic.collect_system_report(runner=runner, os_name="Windows")
+    finally:
+        logic.shutil.which = original_which
+
+
+def assert_wsl_version_one_is_detected_and_convertible() -> None:
+    report = _windows_wsl_report("4.4.0-19041-Microsoft")
+
+    assert report.wsl_distribution_version == 1
+    assert any(item.name == "WSL version" and item.status == logic.STATUS_ERROR for item in report.checks)
+    # Under WSL 1, ROOTBU must not probe/claim conda or ROOT availability.
+    assert not report.wsl_conda_available
+    assert not report.wsl_root_available
+    assert not any(item.name == "Conda (WSL)" for item in report.checks)
+
+    guidance = logic.build_setup_guidance(report)
+    assert any("WSL 1" in message for message in guidance.messages)
+    assert any("wsl --set-version Ubuntu 2" in command for command in guidance.commands)
+
+    install_plan = logic.build_install_plan(report)
+    assert install_plan.commands == []
+    assert any("WSL 1" in message for message in install_plan.messages)
+
+    action = logic.build_action_state(report)
+    assert not action.install_root_enabled
+    assert not action.open_root_enabled
+
+    # ROOTBU can now run the whole conversion itself: an elevated dism step
+    # that enables Virtual Machine Platform (exit code 3010 = restart
+    # required), the official WSL 2 kernel download + install when the
+    # kernel is missing, then wsl --set-version.
+    plan = logic.build_prerequisite_plan(report, windows_is_admin=False, wsl2_kernel_missing=True)
+    assert plan.needed
+    assert plan.can_run
+    assert plan.requires_admin
+    assert plan.opens_elevated
+    assert len(plan.steps) == 4
+    feature_text = logic.command_to_text(plan.steps[0].command)
+    assert "VirtualMachinePlatform" in feature_text
+    assert "Start-Process powershell.exe -Verb RunAs" in feature_text
+    assert "3010" in feature_text
+    download_text = logic.command_to_text(plan.steps[1].command)
+    assert "curl.exe" in download_text
+    assert "wslstorestorage.blob.core.windows.net" in download_text
+    assert "wsl_update" in download_text
+    install_text = logic.command_to_text(plan.steps[2].command)
+    assert "msiexec.exe" in install_text
+    assert "/norestart" in install_text
+    assert "Start-Process powershell.exe -Verb RunAs" in install_text
+    assert plan.steps[3].command == ["wsl", "--set-version", "Ubuntu", "2"]
+
+    admin_plan = logic.build_prerequisite_plan(report, windows_is_admin=True, wsl2_kernel_missing=True)
+    assert admin_plan.can_run
+    assert not admin_plan.opens_elevated
+    assert len(admin_plan.steps) == 4
+    assert admin_plan.steps[2].command[0] == "msiexec.exe"
+    assert "Start-Process" not in logic.command_to_text(admin_plan.steps[0].command)
+
+    kernel_present_plan = logic.build_prerequisite_plan(report, windows_is_admin=True, wsl2_kernel_missing=False)
+    assert len(kernel_present_plan.steps) == 2
+    assert kernel_present_plan.steps[1].command == ["wsl", "--set-version", "Ubuntu", "2"]
+
+    assert plan.has_manual_commands
+    assert any("set-version" in command for command in plan.manual_commands)
+    assert any("/online" in command and "/enable-feature" in command for command in plan.manual_commands)
+    assert any("msiexec.exe" in command for command in plan.manual_commands)
+    for command in plan.manual_commands:
+        assert "sudo" not in command
+        assert "rm -rf" not in command
+
+    # Restart-required (dism 3010) and missing WSL 2 kernel dead ends must be
+    # detected and explained instead of failing with a bare exit code.
+    assert logic.has_wsl_restart_required_marker(logic.WSL_RESTART_REQUIRED_MARKER)
+    assert logic.has_wsl_kernel_update_error(
+        "WSL 2 requires an update to its kernel component. For information please visit https://aka.ms/wsl2kernel"
+    )
+    assert logic.has_wsl_kernel_update_error(
+        "WSL 2 için çekirdek bileşenine yönelik bir güncelleştirme gerekir. https://aka.ms/wsl2kernel adresini ziyaret edin"
+    )
+    # wsl.exe messages are UTF-16: decoded as UTF-8 every character is
+    # followed by a NUL. Detection must survive that byte pattern.
+    nul_interleaved = "\x00".join("visit https://aka.ms/wsl2kernel now") + "\x00"
+    assert logic.has_wsl_kernel_update_error(nul_interleaved)
+    nul_virtualization = "\x00".join(
+        "Error code: Wsl/InstallDistro/Service/RegisterDistro/CreateVm/HCS/HCS_E_HYPERV_NOT_INSTALLED"
+    )
+    assert logic.has_wsl_virtualization_error(nul_virtualization)
+    assert logic.normalize_wsl_output("w\x00s\x00l\x00") == "wsl"
+    restart_guidance = "\n".join(logic.wsl_restart_required_guidance())
+    assert "Restart Windows now" in restart_guidance
+    assert "Convert to WSL 2 again" in restart_guidance
+    kernel_guidance = "\n".join(logic.wsl_kernel_update_error_guidance())
+    assert "aka.ms/wsl2kernel" in kernel_guidance
+    assert "BIOS/UEFI" in kernel_guidance
+
+    app_source = (PROJECT_ROOT / "root_installer.py").read_text(encoding="utf-8")
+    assert "has_wsl_restart_required_marker" in app_source
+    assert "has_wsl_kernel_update_error" in app_source
+    assert "3010" in app_source
+
+
+def assert_wsl_version_two_stays_healthy() -> None:
+    report = _windows_wsl_report("5.15.167.4-microsoft-standard-WSL2")
+
+    assert report.wsl_distribution_version == 2
+    assert not any(item.name == "WSL version" and item.status == logic.STATUS_ERROR for item in report.checks)
+    assert any(item.name == "WSL version" and item.status == logic.STATUS_OK for item in report.checks)
+    # WSL 2 with conda missing should fall back to the normal Miniforge guidance.
+    assert any("conda was not found" in message for message in logic.build_setup_guidance(report).messages)
+
+
+def assert_review_fixes() -> None:
+    # Linux/WSL ARM64 gets the aarch64 Miniforge installer; macOS is unchanged.
+    assert logic.miniforge_installer_name("Linux", "aarch64") == "Miniforge3-Linux-aarch64.sh"
+    assert logic.miniforge_installer_name("Linux", "arm64") == "Miniforge3-Linux-aarch64.sh"
+    assert logic.miniforge_installer_name("Linux", "x86_64") == "Miniforge3-Linux-x86_64.sh"
+    assert logic.miniforge_installer_name("Darwin", "arm64") == "Miniforge3-MacOSX-arm64.sh"
+    assert logic.miniforge_installer_name("Darwin", "x86_64") == "Miniforge3-MacOSX-x86_64.sh"
+
+    # Open ROOT in WSL uses the conda path ROOTBU actually detected.
+    detected = logic.SystemReport(
+        os_name="Windows", platform_label="Windows-test",
+        wsl_available=True, wsl_distribution_available=True, wsl_distribution_name="Ubuntu",
+        wsl_conda_available=True, wsl_conda_command="/opt/miniconda3/bin/conda", wsl_root_in_env=True,
+    )
+    detected_plan = logic.build_open_plan(detected)
+    assert "/opt/miniconda3/bin/activate" in detected_plan.manual_command
+    assert "rootbu_root_env" in detected_plan.manual_command
+    # Fallback must not turn a conda shell function into a broken ./activate path.
+    assert 'dirname "conda"' not in detected_plan.manual_command
+
+    # Default (ROOTBU-managed Miniforge) keeps the ~/miniforge3 activation.
+    default = logic.SystemReport(
+        os_name="Windows", platform_label="Windows-test",
+        wsl_available=True, wsl_distribution_available=True, wsl_distribution_name="Ubuntu",
+        wsl_conda_available=True, wsl_root_in_env=True,
+    )
+    assert 'source "$HOME/miniforge3/bin/activate" rootbu_root_env' in logic.build_open_plan(default).manual_command
+
+    # Docker Desktop pseudo-distros are not selected as the target.
+    def docker_and_ubuntu(command, _timeout):
+        if command == ["wsl", "--list", "--quiet"]:
+            return logic.ProbeResult(0, "docker-desktop\x00\ndocker-desktop-data\x00\nUbuntu\x00\n")
+        return logic.ProbeResult(127, "")
+    available, detail, selected = logic.check_wsl_distribution_available(docker_and_ubuntu)
+    assert available and selected == "Ubuntu"
+    assert "docker-desktop" not in detail
+
+    def docker_only(command, _timeout):
+        if command == ["wsl", "--list", "--quiet"]:
+            return logic.ProbeResult(0, "docker-desktop\ndocker-desktop-data\n")
+        return logic.ProbeResult(127, "")
+    available_only, _detail, selected_only = logic.check_wsl_distribution_available(docker_only)
+    assert not available_only and selected_only == ""
+
+    # UTF-16 NUL-interspersed "no installed distributions" is matched after stripping NULs.
+    original_which = logic.shutil.which
+    logic.shutil.which = lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl" else None
+    try:
+        nul_message = "".join(ch + "\x00" for ch in "no installed distributions")
+
+        def no_distro(command, _timeout):
+            if command == ["wsl", "--status"]:
+                return logic.ProbeResult(1, nul_message)
+            return logic.ProbeResult(1, "")
+        assert logic.check_wsl_available(no_distro) is True
+    finally:
+        logic.shutil.which = original_which
+
+
+def assert_prerequisite_label_reflects_needed() -> None:
+    # When conda is missing but ~/miniforge3 already exists, prerequisites ARE still
+    # needed (manual repair). The button must not read "No Prerequisites Needed".
+    original_dir = logic.native_miniforge_dir
+    with tempfile.TemporaryDirectory() as tmpdir:
+        existing = Path(tmpdir) / "miniforge3"
+        existing.mkdir()
+        logic.native_miniforge_dir = lambda: existing
+        try:
+            report = logic.SystemReport(os_name="Darwin", platform_label="macOS-test")
+            plan = logic.build_prerequisite_plan(report)
+            assert plan.needed and not plan.can_run and not plan.has_manual_commands
+            state = logic.build_action_state(report)
+            assert not state.install_prerequisites_enabled
+            assert state.install_prerequisites_label == "Manual Setup Needed"
+        finally:
+            logic.native_miniforge_dir = original_dir
+
+
+def assert_subprocess_decoding_is_utf8() -> None:
+    # run_probe (rootbu_logic) and stream_command (root_installer) must force UTF-8
+    # decoding so conda/bash UTF-8 output is not mojibaked or crashed with
+    # UnicodeDecodeError on non-UTF-8 Windows code pages (cp1254, cp932, cp936, ...).
+    for path in (PROJECT_ROOT / "rootbu_logic.py", PROJECT_ROOT / "root_installer.py"):
+        source = path.read_text(encoding="utf-8")
+        assert 'encoding="utf-8"' in source
+        assert 'errors="replace"' in source
 
 
 def assert_action_states() -> None:
@@ -779,7 +1013,7 @@ def assert_distributable_build_files() -> None:
     assert "PR into `main` builds test artifacts without creating a GitHub Release" in readme
     assert "Windows/WSL Miniforge install errors" in readme
     assert "Could not create directory: ''" in readme
-    assert "wsl -d Ubuntu bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'" in readme
+    assert "wsl -d Ubuntu --exec bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'" in readme
     assert "`pwd` under `/mnt/c` is normal" in readme
     assert "does not overwrite an existing `~/miniforge3` directory" in readme
     assert "RELEASE.md" in readme
@@ -797,7 +1031,7 @@ def assert_distributable_build_files() -> None:
     assert "Apple could not verify ROOTBU is free of malware" in release
     assert "xattr -dr com.apple.quarantine /path/to/ROOTBU.app" in release
     assert "Could not create directory: ''" in release
-    assert "wsl -d Ubuntu bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'" in release
+    assert "wsl -d Ubuntu --exec bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'" in release
     assert "`pwd` under `/mnt/c` is normal" in release
 
 
@@ -818,6 +1052,12 @@ def main() -> None:
     assert_immediate_miniforge_detection()
     assert_windows_wsl_without_distribution_detection()
     assert_windows_wsl_uses_selected_ubuntu()
+    assert_wsl_kernel_version_parser()
+    assert_wsl_version_one_is_detected_and_convertible()
+    assert_wsl_version_two_stays_healthy()
+    assert_review_fixes()
+    assert_subprocess_decoding_is_utf8()
+    assert_prerequisite_label_reflects_needed()
     assert_action_states()
     assert_attribution_and_license()
     assert_distributable_build_files()

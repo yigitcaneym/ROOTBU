@@ -170,7 +170,7 @@ Also check that WSL has enough disk space. ROOTBU does not use `sudo` and does n
 If WSL user detection fails even though Ubuntu opens normally, run this in PowerShell:
 
 ```powershell
-wsl -d Ubuntu bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'
+wsl -d Ubuntu --exec bash -lc 'whoami; id -un; echo HOME=$HOME; pwd'
 ```
 
 If that command works, report the diagnostic output and retry after updating ROOTBU. A `pwd` under `/mnt/c` is normal when launching ROOTBU from a Windows folder.
