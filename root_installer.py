@@ -159,8 +159,8 @@ STAGE_TEXT = {
     STAGE_WSL2: (
         "Sequence 04 · Prerequisite",
         "Convert to WSL 2",
-        "Conda requires WSL version 2. This converts the Ubuntu distribution in place — your "
-        "files inside Ubuntu are kept.",
+        "WSL 2 is optional. WSL 1 can continue through ROOTBU's compatibility path without BIOS "
+        "virtualization; this step converts the Ubuntu distribution in place if WSL 2 is needed.",
     ),
     STAGE_MINIFORGE: (
         "Sequence 05 · Prerequisite",
@@ -1439,6 +1439,10 @@ class RootBUApp(ctk.CTk):
             for index in (STAGE_WSL, STAGE_UBUNTU, STAGE_WSL2):
                 if index < stage:
                     states[index] = "skip"
+        elif self.current_report is not None and self.current_report.wsl_distribution_version == 1:
+            # WSL 1 deliberately bypasses the WSL 2 conversion station; do
+            # not render that unused prerequisite as completed progress.
+            states[STAGE_WSL2] = "skip"
         return states
 
     def _stage_needs_attention(self, stage: int) -> bool:

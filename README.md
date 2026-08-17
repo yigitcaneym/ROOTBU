@@ -131,6 +131,22 @@ Ubuntu may ask for a Linux username and password on first launch. Finish that se
 
 If WSL is present but conda is missing inside WSL, **Install Prerequisites** can install Miniforge inside WSL to `~/miniforge3` after confirmation. ROOTBU will stop if that path already exists and will not use `sudo`.
 
+#### WSL1 fallback (no BIOS virtualization)
+
+If WSL2 cannot start because CPU virtualization is disabled, an existing WSL1 distribution can be used instead. ROOTBU detects WSL1 and continues with the same Miniforge, conda, ROOT installation, and one-click terminal launch flow; it does not enable Virtual Machine Platform or try to convert the distribution.
+
+WSL1 does not require BIOS/UEFI virtualization. It can be slower and has less Linux syscall compatibility than WSL2, so WSL2 remains recommended when it is available. If WSL1 is not installed yet, enable only the **Windows Subsystem for Linux** optional feature, restart Windows if prompted, install Ubuntu, and ensure the distribution is set to version 1 with `wsl --set-version Ubuntu 1` before running ROOTBU's system scan.
+
+The manual WSL1 bootstrap is:
+
+```powershell
+dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+# Restart Windows if DISM requests it, then continue in Administrator PowerShell.
+wsl --set-default-version 1
+wsl --install -d Ubuntu
+wsl --set-version Ubuntu 1
+```
+
 ## Safety Notes
 
 - ROOTBU runs `wsl --install` only after confirmation, and does not restart Windows automatically.
@@ -160,6 +176,8 @@ If WSL is present but conda is missing inside WSL, **Install Prerequisites** can
 If Ubuntu installation fails with `HCS_E_HYPERV_NOT_INSTALLED`, or says WSL2 is unable to start because virtualization is not enabled, the Windows environment cannot start WSL2. Make sure Windows Virtual Machine Platform is enabled.
 
 On UTM, Parallels, VMware, or other virtual machines, WSL2 may require nested virtualization and it may not be supported or enabled. A physical Windows machine is recommended for full Windows ROOTBU testing.
+
+If BIOS virtualization is unavailable or you do not want to change it, use the WSL1 fallback described above. ROOTBU can continue with WSL1, but package or feature compatibility may be lower than with WSL2.
 
 ### Windows/WSL Miniforge install errors
 

@@ -346,6 +346,8 @@ def assert_wsl_virtualization_error_detection() -> None:
     guidance = "\n".join(logic.wsl_virtualization_error_guidance())
     assert "Virtual Machine Platform" in guidance
     assert "UTM/Parallels/VMware" in guidance
+    assert "WSL1" in guidance
+    assert "wsl --set-version Ubuntu 1" in guidance
     assert "physical Windows machine" in guidance
 
 
@@ -669,73 +671,47 @@ def _windows_wsl_report(uname_release: str, conda_returncode: int = 1) -> logic.
         logic.shutil.which = original_which
 
 
-def assert_wsl_version_one_is_detected_and_convertible() -> None:
+def assert_wsl_version_one_is_detected_and_supported() -> None:
     report = _windows_wsl_report("4.4.0-19041-Microsoft")
 
     assert report.wsl_distribution_version == 1
-    assert any(item.name == "WSL version" and item.status == logic.STATUS_ERROR for item in report.checks)
-    # Under WSL 1, ROOTBU must not probe/claim conda or ROOT availability.
+    assert any(item.name == "WSL version" and item.status == logic.STATUS_WARN for item in report.checks)
+    assert any("no-virtualization compatibility path" in item.detail for item in report.checks)
+    # WSL 1 is a supported compatibility path, so ROOTBU probes conda and ROOT normally.
     assert not report.wsl_conda_available
     assert not report.wsl_root_available
-    assert not any(item.name == "Conda (WSL)" for item in report.checks)
+    assert any(item.name == "Conda (WSL)" and item.status == logic.STATUS_WARN for item in report.checks)
 
     guidance = logic.build_setup_guidance(report)
     assert any("WSL 1" in message for message in guidance.messages)
-    assert any("wsl --set-version Ubuntu 2" in command for command in guidance.commands)
+    assert any("Miniforge" in message for message in guidance.messages)
+    assert not any("wsl --set-version Ubuntu 2" in command for command in guidance.commands)
 
     install_plan = logic.build_install_plan(report)
     assert install_plan.commands == []
     assert any("WSL 1" in message for message in install_plan.messages)
 
+    # The one-click prerequisite path goes directly to Miniforge; it does not
+    # enable Virtual Machine Platform, download the WSL 2 kernel, or convert
+    # the distribution.
+    prerequisite_plan = logic.build_prerequisite_plan(report, windows_is_admin=False)
+    assert prerequisite_plan.needed
+    assert prerequisite_plan.can_run
+    assert not prerequisite_plan.requires_admin
+    assert not prerequisite_plan.opens_elevated
+    assert prerequisite_plan.summary_command == ""
+    assert all(step.command[:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"] for step in prerequisite_plan.steps)
+    assert all("VirtualMachinePlatform" not in logic.command_to_text(step.command) for step in prerequisite_plan.steps)
+    assert all("set-version" not in logic.command_to_text(step.command) for step in prerequisite_plan.steps)
+
     action = logic.build_action_state(report)
+    assert action.install_prerequisites_enabled
     assert not action.install_root_enabled
     assert not action.open_root_enabled
 
-    # ROOTBU can now run the whole conversion itself: an elevated dism step
-    # that enables Virtual Machine Platform (exit code 3010 = restart
-    # required), the official WSL 2 kernel download + install when the
-    # kernel is missing, then wsl --set-version.
-    plan = logic.build_prerequisite_plan(report, windows_is_admin=False, wsl2_kernel_missing=True)
-    assert plan.needed
-    assert plan.can_run
-    assert plan.requires_admin
-    assert plan.opens_elevated
-    assert len(plan.steps) == 4
-    feature_text = logic.command_to_text(plan.steps[0].command)
-    assert "VirtualMachinePlatform" in feature_text
-    assert "Start-Process powershell.exe -Verb RunAs" in feature_text
-    assert "3010" in feature_text
-    download_text = logic.command_to_text(plan.steps[1].command)
-    assert "curl.exe" in download_text
-    assert "wslstorestorage.blob.core.windows.net" in download_text
-    assert "wsl_update" in download_text
-    install_text = logic.command_to_text(plan.steps[2].command)
-    assert "msiexec.exe" in install_text
-    assert "/norestart" in install_text
-    assert "Start-Process powershell.exe -Verb RunAs" in install_text
-    assert plan.steps[3].command == ["wsl", "--set-version", "Ubuntu", "2"]
-
-    admin_plan = logic.build_prerequisite_plan(report, windows_is_admin=True, wsl2_kernel_missing=True)
-    assert admin_plan.can_run
-    assert not admin_plan.opens_elevated
-    assert len(admin_plan.steps) == 4
-    assert admin_plan.steps[2].command[0] == "msiexec.exe"
-    assert "Start-Process" not in logic.command_to_text(admin_plan.steps[0].command)
-
-    kernel_present_plan = logic.build_prerequisite_plan(report, windows_is_admin=True, wsl2_kernel_missing=False)
-    assert len(kernel_present_plan.steps) == 2
-    assert kernel_present_plan.steps[1].command == ["wsl", "--set-version", "Ubuntu", "2"]
-
-    assert plan.has_manual_commands
-    assert any("set-version" in command for command in plan.manual_commands)
-    assert any("/online" in command and "/enable-feature" in command for command in plan.manual_commands)
-    assert any("msiexec.exe" in command for command in plan.manual_commands)
-    for command in plan.manual_commands:
-        assert "sudo" not in command
-        assert "rm -rf" not in command
-
     # Restart-required (dism 3010) and missing WSL 2 kernel dead ends must be
-    # detected and explained instead of failing with a bare exit code.
+    # detected and explained instead of failing with a bare exit code. These
+    # helpers remain for the WSL 2 path and are independent of WSL 1 support.
     assert logic.has_wsl_restart_required_marker(logic.WSL_RESTART_REQUIRED_MARKER)
     assert logic.has_wsl_kernel_update_error(
         "WSL 2 requires an update to its kernel component. For information please visit https://aka.ms/wsl2kernel"
@@ -763,6 +739,17 @@ def assert_wsl_version_one_is_detected_and_convertible() -> None:
     assert "has_wsl_restart_required_marker" in app_source
     assert "has_wsl_kernel_update_error" in app_source
     assert "3010" in app_source
+
+    # Once conda exists, WSL 1 may proceed all the way to the normal ROOT
+    # installation command and the ROOTBU action state enables that button.
+    ready_report = _windows_wsl_report("4.4.0-19041-Microsoft", conda_returncode=0)
+    assert ready_report.wsl_distribution_version == 1
+    assert ready_report.wsl_conda_available
+    assert logic.conda_available_for_root_install(ready_report)
+    ready_plan = logic.build_install_plan(ready_report)
+    assert len(ready_plan.commands) == 1
+    assert ready_plan.commands[0][:6] == ["wsl", "-d", "Ubuntu", "--exec", "bash", "-lc"]
+    assert logic.build_action_state(ready_report).install_root_enabled
 
 
 def assert_wsl_version_two_stays_healthy() -> None:
@@ -1059,7 +1046,7 @@ def main() -> None:
     assert_windows_wsl_without_distribution_detection()
     assert_windows_wsl_uses_selected_ubuntu()
     assert_wsl_kernel_version_parser()
-    assert_wsl_version_one_is_detected_and_convertible()
+    assert_wsl_version_one_is_detected_and_supported()
     assert_wsl_version_two_stays_healthy()
     assert_review_fixes()
     assert_subprocess_decoding_is_utf8()

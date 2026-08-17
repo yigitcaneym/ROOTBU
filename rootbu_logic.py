@@ -319,6 +319,8 @@ def wsl_virtualization_error_guidance() -> list[str]:
         "WSL2 could not start because virtualization / Virtual Machine Platform is not available in this Windows environment.",
         "On a physical Windows PC: enable virtualization in BIOS/UEFI and make sure Windows Virtual Machine Platform is enabled.",
         "In a virtual machine such as UTM/Parallels/VMware: WSL2 may require nested virtualization, and it may not be supported or enabled.",
+        "If BIOS virtualization is unavailable, WSL1 is a no-virtualization fallback: use an installed Ubuntu distribution with `wsl --set-version Ubuntu 1`, then run Check System again.",
+        "If Ubuntu is not listed by `wsl --list --verbose`, install the WSL feature without Virtual Machine Platform, install Ubuntu, set its version to 1, and then return to ROOTBU.",
         "Try the same ROOTBU flow on a physical Windows machine if WSL2 cannot start inside the VM.",
     ]
 
@@ -582,20 +584,16 @@ def wsl_set_version_command(distro: str) -> str:
 def wsl_version_one_detail(distro: str) -> str:
     name = distro or "The WSL distribution"
     return (
-        f"{name} is running on WSL 1, which cannot run conda or ROOT reliably. "
-        "Convert it to WSL 2, then run Check System again."
+        f"{name} is running on WSL 1. ROOTBU will use its no-virtualization compatibility path."
     )
 
 
 def wsl_version_one_messages(distro: str) -> list[str]:
     name = distro or "your WSL distribution"
     return [
-        f"{name} is installed, but it is running on WSL 1.",
-        "WSL 1 cannot run conda, Miniforge, or ROOT reliably, so ROOTBU cannot continue on WSL 1.",
-        "ROOTBU can enable the Virtual Machine Platform Windows feature (UAC prompt), install the official WSL 2 kernel update if it is missing, and convert the distribution to WSL 2 — all after one confirmation.",
-        "WSL 2 also needs CPU virtualization enabled in the BIOS/UEFI — ROOTBU cannot change BIOS settings.",
-        "If Windows asks for a restart, restart and then run Check System again.",
-        "Manual command(s), if you prefer to run them yourself in Administrator PowerShell:",
+        f"{name} is running on WSL 1, so ROOTBU will use its no-virtualization compatibility path.",
+        "WSL 1 does not require BIOS/UEFI virtualization. ROOTBU can continue with the normal Miniforge and ROOT setup flow.",
+        "WSL 1 can be slower and has less Linux syscall compatibility than WSL 2. If a conda package or ROOT feature fails, WSL 2 remains the recommended option.",
     ]
 
 
@@ -685,20 +683,8 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
                     report.wsl_distribution_version = parse_wsl_kernel_version(uname_result.stdout)
                 if report.wsl_distribution_version == 1:
                     report.checks.append(
-                        CheckItem("WSL version", STATUS_ERROR, wsl_version_one_detail(report.wsl_distribution_name))
+                        CheckItem("WSL version", STATUS_WARN, wsl_version_one_detail(report.wsl_distribution_name))
                     )
-                    if wsl2_kernel_installed():
-                        report.checks.append(
-                            CheckItem("WSL 2 kernel", STATUS_OK, "Kernel update package is installed.")
-                        )
-                    else:
-                        report.checks.append(
-                            CheckItem(
-                                "WSL 2 kernel",
-                                STATUS_WARN,
-                                "Not installed. ROOTBU downloads and installs it during Convert to WSL 2.",
-                            )
-                        )
                 elif report.wsl_distribution_version == 2:
                     report.checks.append(
                         CheckItem(
@@ -712,10 +698,10 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
                 CheckItem("WSL", STATUS_WARN, "WSL was not detected. ROOTBU can run wsl --install after confirmation.")
             )
 
-        # WSL 2 needs virtualization enabled in the firmware. Surface it in
-        # the scan while the pipeline has not reached WSL 2 yet, so users see
-        # the (BIOS-only) blocker before a conversion attempt fails.
-        if report.wsl_distribution_version != 2:
+        # If the WSL version cannot be identified, surface the firmware check
+        # as a diagnostic. A confirmed WSL 1 distribution deliberately skips
+        # this because it does not use the WSL 2 virtualization path.
+        if report.wsl_distribution_version is None:
             firmware = virtualization_firmware_enabled()
             if firmware is False:
                 report.checks.append(
@@ -761,7 +747,6 @@ def collect_system_report(runner: Runner = run_probe, os_name: str | None = None
         os_name == "Windows"
         and report.wsl_available
         and report.wsl_distribution_available
-        and report.wsl_distribution_version != 1
     ):
         distro = report.wsl_distribution_name
         wsl_conda = run_wsl_probe(wsl_conda_probe_script(), runner, distro=distro)
@@ -812,7 +797,6 @@ def build_install_plan(report: SystemReport) -> InstallPlan:
             return InstallPlan("Windows / WSL", messages, [])
         if report.wsl_distribution_version == 1:
             messages.extend(wsl_version_one_messages(report.wsl_distribution_name))
-            return InstallPlan("Windows / WSL", messages, [])
         if not report.wsl_conda_available:
             messages.append("Install Miniforge or Miniconda inside WSL first, then run Check System again.")
             return InstallPlan("Windows / WSL", messages, [])
@@ -1018,7 +1002,6 @@ def conda_available_for_root_install(report: SystemReport) -> bool:
         return (
             report.wsl_available
             and report.wsl_distribution_available
-            and report.wsl_distribution_version != 1
             and report.wsl_conda_available
         )
     return report.native_conda is not None
@@ -1454,29 +1437,13 @@ def build_prerequisite_plan(
                 manual_commands=["wsl --install -d Ubuntu"],
             )
 
-        if report.wsl_distribution_version == 1:
-            admin = is_windows_admin() if windows_is_admin is None else windows_is_admin
-            return PrerequisitePlan(
-                context="Windows / WSL",
-                title="Convert WSL to version 2",
-                needed=True,
-                install_name="WSL 2 conversion",
-                install_location=f"{report.wsl_distribution_name or 'Ubuntu'} distribution",
-                summary_command=wsl_set_version_command(report.wsl_distribution_name),
-                requires_admin=True,
-                opens_elevated=not admin,
-                messages=wsl_version_one_messages(report.wsl_distribution_name),
-                steps=build_wsl_version_two_steps(
-                    report.wsl_distribution_name,
-                    windows_is_admin=admin,
-                    kernel_missing=wsl2_kernel_missing,
-                    machine=machine,
-                ),
-                manual_commands=wsl_version_one_commands(report.wsl_distribution_name, machine=machine),
-            )
-
         if not report.wsl_conda_available:
             miniforge_steps = build_miniforge_steps("Linux", inside_wsl=True, distro=report.wsl_distribution_name)
+            compatibility_messages = (
+                wsl_version_one_messages(report.wsl_distribution_name)
+                if report.wsl_distribution_version == 1
+                else []
+            )
             return PrerequisitePlan(
                 context="Windows / WSL",
                 title="Install Miniforge inside WSL",
@@ -1484,7 +1451,7 @@ def build_prerequisite_plan(
                 install_name="Miniforge",
                 install_location="~/miniforge3 inside the default WSL distribution",
                 download_url=miniforge_url("Linux"),
-                messages=[
+                messages=compatibility_messages + [
                     "ROOTBU can install Miniforge inside WSL after confirmation.",
                     "The installer target is ~/miniforge3 inside WSL.",
                     "ROOTBU will stop if ~/miniforge3 already exists.",
@@ -1611,14 +1578,12 @@ def build_setup_guidance(report: SystemReport) -> SetupGuidance:
             )
 
         if report.wsl_distribution_version == 1:
-            return SetupGuidance(
-                "Next Steps",
-                wsl_version_one_messages(report.wsl_distribution_name),
-                wsl_version_one_commands(report.wsl_distribution_name),
-            )
+            compatibility_messages = wsl_version_one_messages(report.wsl_distribution_name)
+        else:
+            compatibility_messages = []
 
         if not report.wsl_conda_available:
-            messages = [
+            messages = compatibility_messages + [
                 "WSL is available, but conda was not found inside WSL.",
                 "Use Install Prerequisites to let ROOTBU install Miniforge inside WSL after confirmation.",
                 "Recommended: Miniforge is focused on conda-forge packages.",
@@ -1627,11 +1592,14 @@ def build_setup_guidance(report: SystemReport) -> SetupGuidance:
             return SetupGuidance("Next Steps", messages, wsl_miniforge_manual_commands(report.wsl_distribution_name))
 
         if report.wsl_root_in_env or report.wsl_root_available:
-            return SetupGuidance("Next Steps", ["ROOT is already available in WSL. You can use Open ROOT."])
+            return SetupGuidance(
+                "Next Steps",
+                compatibility_messages + ["ROOT is already available in WSL. You can use Open ROOT."],
+            )
 
         return SetupGuidance(
             "Next Steps",
-            [
+            compatibility_messages + [
                 "WSL and conda are available.",
                 f"You can use Install ROOT to create or update {ENV_NAME}. ROOTBU will show a dry run and ask before running conda.",
             ],

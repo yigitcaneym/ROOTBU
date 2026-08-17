@@ -98,13 +98,30 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Preserve the v0.2.1 macOS build for v0.2.2
+        if: github.ref_name == 'v0.2.2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -f release-assets/ROOTBU-macos.zip
+          gh release download v0.2.1 \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "ROOTBU-macos.zip" \
+            --dir release-assets \
+            --clobber
+          test "$(sha256sum release-assets/ROOTBU-macos.zip | cut -d' ' -f1)" = "04e000b825d2c3547b92b3e08cc56d3507ddf9f3b191b2668da8fad12b34075d"
+
       - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
+          notes="ROOTBU release $TAG_NAME"
+          if [ "$TAG_NAME" = "v0.2.2" ]; then
+            notes="ROOTBU v0.2.2: WSL1-compatible Windows setup. The macOS build is carried forward unchanged from v0.2.1."
+          fi
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" release-assets/* --clobber
           else
-            gh release create "$TAG_NAME" release-assets/* --title "$TAG_NAME" --notes "ROOTBU release $TAG_NAME"
+            gh release create "$TAG_NAME" release-assets/* --title "$TAG_NAME" --notes "$notes"
           fi
